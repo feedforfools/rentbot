@@ -97,3 +97,6 @@ filterwarnings = [
     # These are internal to the test framework, not our code.
     "ignore::DeprecationWarning:pytest_asyncio",
 ]
+markers = [
+    "integration: marks tests that talk to real external services (skip with '-m not integration')",
+]
