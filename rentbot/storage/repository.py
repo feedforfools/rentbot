@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 import aiosqlite
 
 from rentbot.core.exceptions import ListingAlreadyExistsError
+from rentbot.core.ids import canonical_id, canonical_id_from_listing
 from rentbot.core.models import Listing
 
 __all__ = [
@@ -42,39 +43,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# ID helpers
-# ---------------------------------------------------------------------------
-
-
-def canonical_id(source: str, provider_id: str) -> str:
-    """Compute the canonical database key for a listing.
-
-    The canonical key is ``"<source>:<provider_id>"``, e.g.
-    ``"immobiliare:12345678"``.  This is used as the PRIMARY KEY in
-    ``seen_listings`` so rows are unique across all providers.
-
-    Args:
-        source: Provider name string (e.g. ``"immobiliare"``).
-        provider_id: Provider-local listing identifier.
-
-    Returns:
-        A ``"<source>:<provider_id>"`` string.
-    """
-    return f"{source}:{provider_id}"
-
-
-def canonical_id_from_listing(listing: Listing) -> str:
-    """Convenience wrapper: compute the canonical ID from a :class:`Listing`.
-
-    Args:
-        listing: A fully constructed :class:`~rentbot.core.models.Listing`.
-
-    Returns:
-        The canonical ``"<source>:<id>"`` key.
-    """
-    return canonical_id(str(listing.source), listing.id)
 
 
 # ---------------------------------------------------------------------------

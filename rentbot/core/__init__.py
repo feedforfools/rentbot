@@ -19,6 +19,7 @@ from rentbot.core.exceptions import (
     TelegramError,
     TelegramRateLimitError,
 )
+from rentbot.core.ids import canonical_id, canonical_id_from_listing
 from rentbot.core.logging_config import JsonFormatter, configure_logging
 from rentbot.core.models import Listing, ListingSource
 from rentbot.core.settings import Settings
@@ -34,6 +35,9 @@ __all__ = [
     "Settings",
     # Filter criteria
     "FilterCriteria",
+    # ID strategy
+    "canonical_id",
+    "canonical_id_from_listing",
     # Exceptions — base
     "RentbotError",
     # Exceptions — config
