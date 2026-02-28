@@ -128,6 +128,24 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # Immobiliare.it
+    # ------------------------------------------------------------------
+    immobiliare_vrt: str = Field(
+        default="",
+        description=(
+            "Semicolon-separated lat,lng polygon vertices for Immobiliare.it "
+            "geo search (the ``vrt`` query parameter).  Copy the value from "
+            "a Network-tab capture on the search-list page.  "
+            "Empty string disables the Immobiliare provider."
+        ),
+    )
+    immobiliare_max_pages: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum number of paginated result pages to fetch per poll.",
+    )
+
+    # ------------------------------------------------------------------
     # Search parameters
     # ------------------------------------------------------------------
     search_city: str = Field(
