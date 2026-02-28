@@ -1,0 +1,5 @@
+# Docker assets for core + worker runtime topology.
+# Populated in Epic 7.
+# - Dockerfile.core  — python:3.11-slim, no browsers
+# - Dockerfile.worker — Playwright runtime
+# - docker-compose.yml

@@ -1,0 +1,1 @@
+"""Rentbot test suite."""
