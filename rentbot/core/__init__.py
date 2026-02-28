@@ -19,11 +19,15 @@ from rentbot.core.exceptions import (
     TelegramRateLimitError,
 )
 from rentbot.core.logging_config import JsonFormatter, configure_logging
+from rentbot.core.models import Listing, ListingSource
 
 __all__ = [
     # Logging
     "configure_logging",
     "JsonFormatter",
+    # Domain models
+    "Listing",
+    "ListingSource",
     # Exceptions — base
     "RentbotError",
     # Exceptions — config
