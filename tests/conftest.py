@@ -10,8 +10,10 @@ import logging
 import os
 
 import pytest
+from pydantic_settings import SettingsConfigDict
 
 from rentbot.core import configure_logging
+from rentbot.core.settings import Settings
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +44,9 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Useful when testing settings loading to ensure a clean environment
     without real credentials bleeding in from the developer's shell.
+
+    Also disables pydantic-settings `.env` file loading so that credentials
+    present in a local `.env` file do not leak into Settings isolation tests.
     """
     sensitive_prefixes = (
         "TELEGRAM_",
@@ -60,6 +65,20 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in list(os.environ):
         if any(key.startswith(prefix) for prefix in sensitive_prefixes):
             monkeypatch.delenv(key, raising=False)
+
+    # Prevent pydantic-settings from reading the on-disk .env file.
+    # Without this, real credentials present in .env bleed into Settings()
+    # even after the env-var patch above, because pydantic-settings reads the
+    # file directly rather than via os.environ.
+    monkeypatch.setattr(
+        Settings,
+        "model_config",
+        SettingsConfigDict(
+            env_file=None,
+            env_file_encoding="utf-8",
+            extra="ignore",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
