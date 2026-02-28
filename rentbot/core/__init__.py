@@ -21,6 +21,7 @@ from rentbot.core.exceptions import (
 )
 from rentbot.core.logging_config import JsonFormatter, configure_logging
 from rentbot.core.models import Listing, ListingSource
+from rentbot.core.settings import Settings
 
 __all__ = [
     # Logging
@@ -29,6 +30,8 @@ __all__ = [
     # Domain models
     "Listing",
     "ListingSource",
+    # Settings
+    "Settings",
     # Filter criteria
     "FilterCriteria",
     # Exceptions — base
