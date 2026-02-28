@@ -28,8 +28,12 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, model_validator
+
+if TYPE_CHECKING:
+    from rentbot.core.models import Listing
 
 __all__ = ["FilterCriteria"]
 
@@ -340,5 +344,35 @@ class FilterCriteria(BaseModel):
         if not self.matches_zone(zone):
             return False, f"zone {zone!r} not in allowlist {self.zones_include}"
         if not self.matches_keywords(title, description):
-            return False, "blocked by keyword"
+            kw_hit = next(
+                (kw for kw in self.keyword_blocklist if _normalise(kw) in _normalise(f"{title} {description}")),
+                "unknown",
+            )
+            return False, f"blocked by keyword {kw_hit!r}"
         return True, ""
+
+    def matches_listing(self, listing: "Listing") -> tuple[bool, str]:  # noqa: F821
+        """Evaluate all criteria against a :class:`~rentbot.core.models.Listing`.
+
+        Convenience wrapper around :meth:`matches` that unpacks the relevant
+        fields from a fully-constructed listing object.  This is the preferred
+        API inside the ingestion pipeline where a ``Listing`` is always
+        available.
+
+        Args:
+            listing: The normalised listing to evaluate.
+
+        Returns:
+            A ``(passed, reason)`` tuple.  *passed* is ``True`` when all
+            criteria are satisfied.  *reason* is ``""`` on pass, or a short
+            human-readable explanation of the first failed check.
+        """
+        return self.matches(
+            listing.price,
+            rooms=listing.rooms,
+            area_sqm=listing.area_sqm,
+            furnished=listing.furnished,
+            zone=listing.zone,
+            title=listing.title,
+            description=listing.description,
+        )
