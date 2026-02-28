@@ -1,5 +1,6 @@
 """Core domain models, settings, logging configuration, and shared utilities."""
 
+from rentbot.core.criteria import FilterCriteria
 from rentbot.core.exceptions import (
     BrowserProviderError,
     ConfigError,
@@ -28,6 +29,8 @@ __all__ = [
     # Domain models
     "Listing",
     "ListingSource",
+    # Filter criteria
+    "FilterCriteria",
     # Exceptions — base
     "RentbotError",
     # Exceptions — config
