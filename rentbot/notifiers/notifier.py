@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 
+from rentbot.core.exceptions import TelegramError
 from rentbot.core.models import Listing
 from rentbot.core.run_context import RunContext
 from rentbot.notifiers.formatter import format_listing
@@ -78,9 +79,12 @@ class Notifier:
 
         Raises:
             TelegramError: Propagated from the transport layer when a live
-                send fails after all retries are exhausted.  The caller
-                should catch this and decide whether to mark the listing as
-                un-notified for a future retry.
+                send fails after all retries are exhausted.  A structured
+                ``ERROR`` log entry (including listing id and title) is
+                always emitted before the exception propagates, so callers
+                do not need to repeat the logging.
+            Exception: Unexpected non-Telegram exceptions are logged at
+                ``CRITICAL`` level and re-raised.
         """
         cid = f"{listing.source}:{listing.id}"
 
@@ -116,6 +120,24 @@ class Notifier:
         # Live mode — send via Telegram.
         # ------------------------------------------------------------------
         logger.debug("Sending alert for %s (%s)", cid, listing.title[:60])
-        await self._client.send_message(text, parse_mode="MarkdownV2")
+        try:
+            await self._client.send_message(text, parse_mode="MarkdownV2")
+        except TelegramError as exc:
+            logger.error(
+                "Failed to send alert for %s (%s) after all retries: %s",
+                cid,
+                listing.title[:60],
+                exc,
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.critical(
+                "Unexpected error sending alert for %s (%s): %s",
+                cid,
+                listing.title[:60],
+                exc,
+                exc_info=True,
+            )
+            raise
         logger.info("Alert sent: %s — %s", cid, listing.title[:60])
         return True
