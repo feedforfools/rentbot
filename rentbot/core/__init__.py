@@ -22,6 +22,7 @@ from rentbot.core.exceptions import (
 from rentbot.core.ids import canonical_id, canonical_id_from_listing
 from rentbot.core.logging_config import JsonFormatter, configure_logging
 from rentbot.core.models import Listing, ListingSource
+from rentbot.core.run_context import RunContext
 from rentbot.core.settings import Settings
 
 __all__ = [
@@ -38,6 +39,8 @@ __all__ = [
     # ID strategy
     "canonical_id",
     "canonical_id_from_listing",
+    # Run context
+    "RunContext",
     # Exceptions — base
     "RentbotError",
     # Exceptions — config

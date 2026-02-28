@@ -16,6 +16,7 @@ import logging
 import sys
 
 from rentbot.core import configure_logging
+from rentbot.core.run_context import RunContext
 
 
 def main() -> None:
@@ -63,12 +64,10 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info("Rentbot starting up")
 
-    if args.seed:
-        logger.info("Seed mode enabled — no alerts will be sent")
-    if args.dry_run:
-        logger.info("Dry-run mode enabled — Telegram messages will not be sent")
+    ctx = RunContext(seed=args.seed, dry_run=args.dry_run)
+    logger.info("Run context: %s", ctx)
 
-    # TODO (E6-T1): replace with orchestrator.run(seed=args.seed, dry_run=args.dry_run)
+    # TODO (E6-T1): replace with orchestrator.run(ctx=ctx)
     logger.warning("Orchestrator not yet implemented — exiting")
     sys.exit(0)
 
