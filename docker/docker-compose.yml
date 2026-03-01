@@ -1,0 +1,76 @@
+# =============================================================================
+# Rentbot — Docker Compose (MVP: core poller only)
+# =============================================================================
+#
+# Starts the core polling container with a persisted SQLite data volume.
+# Copy .env.example to .env and fill in credentials before the first run.
+#
+#   cp .env.example .env
+#   # edit .env ...
+#
+# Common commands
+# ---------------
+#   Start (continuous mode):
+#     docker compose up -d
+#
+#   Start (one-shot seed run — populate DB, no alerts):
+#     docker compose run --rm core --seed
+#
+#   Dry-run (log alerts, no Telegram sends):
+#     docker compose run --rm core --dry-run --once
+#
+#   Follow logs:
+#     docker compose logs -f core
+#
+#   Stop:
+#     docker compose down
+#
+#   Stop + wipe data volume:
+#     docker compose down -v
+#
+# Phase 2 additions
+# -----------------
+# A `worker` service (Playwright browser automation) will be added once
+# E6-T7 (core↔worker communication contract) and E7-T2 (Dockerfile.worker)
+# are implemented.
+# =============================================================================
+
+services:
+
+  core:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.core
+    image: rentbot-core:latest
+    container_name: rentbot_core
+
+    # Load all settings from .env (sits at the project root).
+    # DATABASE_PATH is overridden below so it always points to the volume
+    # regardless of what's in .env.
+    env_file:
+      - ../.env
+
+    environment:
+      # Force the DB into the persistent volume — overrides any .env value.
+      DATABASE_PATH: /data/rentbot.db
+
+    volumes:
+      # Named volume for SQLite persistence across container restarts.
+      # Single-writer: only this container mounts it (Phase 2 worker uses a
+      # separate staging volume per the core↔worker contract in E6-T7).
+      - rentbot_data:/data
+
+    # Restart policy and health-check configuration added in E7-T4.
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  rentbot_data:
+    # External: false (default) — Docker Compose manages this volume.
+    # In production, swap for an explicit host-bind mount:
+    #   driver: local
+    #   driver_opts:
+    #     type: none
+    #     o: bind
+    #     device: /path/on/host
