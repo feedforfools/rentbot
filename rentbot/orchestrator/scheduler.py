@@ -37,8 +37,10 @@ Typical usage::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import random
+import signal
 from typing import NoReturn
 
 from rentbot.core.run_context import RunContext
@@ -189,8 +191,19 @@ async def run_continuous(
     Starts two independent ``asyncio`` tasks — one for API providers and
     one (placeholder) for browser providers — and runs them concurrently
     via :func:`asyncio.gather`.  The function never returns normally.  Stop
-    the process with ``SIGINT`` (Ctrl+C) or ``SIGTERM``; graceful shutdown
-    (E6-T6) will add clean teardown on those signals.
+    the process with ``SIGINT`` (Ctrl+C) or ``SIGTERM``.
+
+    **Graceful shutdown (E6-T6):** A ``SIGTERM`` handler is registered on
+    the running event loop immediately after the polling tasks are created.
+    When ``SIGTERM`` is received (e.g. from ``docker stop``), both tasks are
+    cancelled, the current provider cycle is allowed to finish its current
+    ``await`` point, and then resource teardown proceeds via the existing
+    :class:`contextlib.AsyncExitStack` in
+    :func:`~rentbot.orchestrator.runner.run_once`.  The handler is removed in
+    a ``finally`` block so it does not interfere with any subsequent
+    :func:`asyncio.run` call.  ``SIGINT`` (Ctrl+C) is handled by Python's
+    default asyncio behaviour which raises :exc:`KeyboardInterrupt` / cancels
+    the main task — no additional handler is required.
 
     If either loop raises an unhandled ``BaseException`` (e.g. a
     ``CancelledError`` during shutdown), :func:`asyncio.gather` re-raises it
@@ -226,14 +239,53 @@ async def run_continuous(
         name="rentbot-browser-loop",
     )
 
+    # ------------------------------------------------------------------
+    # Graceful shutdown (E6-T6) — SIGTERM handler
+    # ------------------------------------------------------------------
+    loop = asyncio.get_running_loop()
+    # One-element mutable cell so the inner closure can write to it.
+    _shutdown_signal: list[str] = []
+
+    def _request_graceful_shutdown(signame: str) -> None:
+        """Cancel running tasks when a termination signal is received.
+
+        Idempotent: the 'graceful shutdown' log line is emitted only once
+        even if the handler fires multiple times (e.g. impatient Ctrl+C).
+        Task cancellation itself is safe to call repeatedly.
+        """
+        if not _shutdown_signal:
+            _shutdown_signal.append(signame)
+            logger.info(
+                "Received %s — graceful shutdown requested; "
+                "cancelling active tasks.",
+                signame,
+            )
+        api_task.cancel()
+        browser_task.cancel()
+
+    loop.add_signal_handler(
+        signal.SIGTERM, lambda: _request_graceful_shutdown("SIGTERM")
+    )
+
     try:
         # Both loops are infinite; gather propagates the first exception
         # (including CancelledError on shutdown).
         await asyncio.gather(api_task, browser_task)
     except (asyncio.CancelledError, KeyboardInterrupt):
-        logger.info("Continuous loop cancelled — stopping tasks.")
+        if _shutdown_signal:
+            logger.info(
+                "Graceful shutdown complete (signal: %s).",
+                _shutdown_signal[0],
+            )
+        else:
+            logger.info("Continuous loop cancelled — stopping tasks.")
         api_task.cancel()
         browser_task.cancel()
         # Await cancellation so tasks can clean up.
         await asyncio.gather(api_task, browser_task, return_exceptions=True)
         raise
+    finally:
+        # Always deregister the signal handler so it does not interfere
+        # with any subsequent asyncio.run() call or test teardown.
+        with contextlib.suppress(Exception):
+            loop.remove_signal_handler(signal.SIGTERM)

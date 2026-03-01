@@ -105,6 +105,12 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Interrupted — exiting.")
         sys.exit(0)
+    except asyncio.CancelledError:
+        # Raised when run_continuous() is stopped via SIGTERM — the
+        # signal handler in scheduler.py already logged the shutdown
+        # message, so we exit silently here.
+        logger.info("Shutdown complete — exiting.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":

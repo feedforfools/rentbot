@@ -1,4 +1,4 @@
-"""Unit tests for Epic 6 — Orchestration: scheduler (E6-T2) + circuit breaker (E6-T3) + run summary (E6-T4).
+"""Unit tests for Epic 6 — Orchestration: scheduler (E6-T2) + circuit breaker (E6-T3) + run summary (E6-T4) + graceful shutdown (E6-T6).
 
 Tests cover:
 - ``next_api_interval`` / ``next_browser_interval`` — pure interval helpers.
@@ -6,6 +6,8 @@ Tests cover:
   is called with a valid jittered value.
 - ``run_continuous`` — verifies both concurrent tasks are created and that
   CancelledError propagates cleanly (clean shutdown path).
+- ``TestGracefulShutdown`` — SIGTERM handler registration, idempotent log
+  emission, task cancellation, and cleanup in the finally block (E6-T6).
 - ``CircuitBreakerRegistry`` — state transitions (CLOSED → OPEN → HALF_OPEN →
   CLOSED), exponential backoff, threshold behaviour, reset on success.
 - ``run_provider`` with circuit breaker — skips when OPEN, records outcomes.
@@ -16,6 +18,9 @@ Tests cover:
 from __future__ import annotations
 
 import asyncio
+import logging
+import signal
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -333,6 +338,191 @@ class TestRunContinuous:
                     run_continuous(ctx=ctx, settings=settings),
                     timeout=5.0,
                 )
+
+
+# ---------------------------------------------------------------------------
+# Graceful shutdown (E6-T6)
+# ---------------------------------------------------------------------------
+
+
+class TestGracefulShutdown:
+    """E6-T6: SIGTERM handler registration, idempotent log, cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_sigterm_handler_registered_on_loop(
+        self, ctx: RunContext, settings: MagicMock
+    ) -> None:
+        """run_continuous calls loop.add_signal_handler(SIGTERM, …) on entry."""
+        loop = asyncio.get_running_loop()
+        registered: dict[Any, Any] = {}
+
+        async def fast_cancel(**kwargs: object) -> None:
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(
+                loop,
+                "add_signal_handler",
+                side_effect=lambda sig, cb: registered.update({sig: cb}),
+            ),
+            patch.object(loop, "remove_signal_handler"),
+            patch(
+                "rentbot.orchestrator.scheduler.run_once",
+                side_effect=fast_cancel,
+            ),
+        ):
+            with pytest.raises((asyncio.CancelledError, BaseException)):
+                await run_continuous(ctx=ctx, settings=settings)
+
+        assert signal.SIGTERM in registered, (
+            "SIGTERM handler was not registered on the event loop"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sigterm_handler_removed_in_finally(
+        self, ctx: RunContext, settings: MagicMock
+    ) -> None:
+        """loop.remove_signal_handler(SIGTERM) is called even after cancellation."""
+        loop = asyncio.get_running_loop()
+        removed: list[Any] = []
+
+        async def fast_cancel(**kwargs: object) -> None:
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(loop, "add_signal_handler"),
+            patch.object(
+                loop,
+                "remove_signal_handler",
+                side_effect=lambda sig: removed.append(sig),
+            ),
+            patch(
+                "rentbot.orchestrator.scheduler.run_once",
+                side_effect=fast_cancel,
+            ),
+        ):
+            with pytest.raises((asyncio.CancelledError, BaseException)):
+                await run_continuous(ctx=ctx, settings=settings)
+
+        assert signal.SIGTERM in removed, (
+            "SIGTERM handler was not removed from the event loop in finally block"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sigterm_callback_logs_graceful_shutdown(
+        self, ctx: RunContext, settings: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Invoking the registered SIGTERM callback emits a 'graceful shutdown' log."""
+        loop = asyncio.get_running_loop()
+        captured: dict[Any, Any] = {}
+
+        async def invoke_sigterm_then_cancel(**kwargs: object) -> None:
+            # Simulate SIGTERM arriving while a cycle is in progress.
+            if signal.SIGTERM in captured:
+                captured[signal.SIGTERM]()
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(
+                loop,
+                "add_signal_handler",
+                side_effect=lambda sig, cb: captured.update({sig: cb}),
+            ),
+            patch.object(loop, "remove_signal_handler"),
+            patch(
+                "rentbot.orchestrator.scheduler.run_once",
+                side_effect=invoke_sigterm_then_cancel,
+            ),
+        ):
+            with caplog.at_level(
+                logging.INFO, logger="rentbot.orchestrator.scheduler"
+            ):
+                with pytest.raises((asyncio.CancelledError, BaseException)):
+                    await run_continuous(ctx=ctx, settings=settings)
+
+        sigterm_log = [
+            r.message for r in caplog.records if "SIGTERM" in r.message
+        ]
+        assert sigterm_log, "No log message mentioning SIGTERM was emitted"
+
+    @pytest.mark.asyncio
+    async def test_sigterm_callback_logs_only_once_on_repeated_signals(
+        self, ctx: RunContext, settings: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The 'graceful shutdown' message appears exactly once even if SIGTERM fires twice."""
+        loop = asyncio.get_running_loop()
+        captured: dict[Any, Any] = {}
+
+        async def invoke_sigterm_twice_then_cancel(**kwargs: object) -> None:
+            if signal.SIGTERM in captured:
+                captured[signal.SIGTERM]()  # first fire
+                captured[signal.SIGTERM]()  # impatient second fire
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(
+                loop,
+                "add_signal_handler",
+                side_effect=lambda sig, cb: captured.update({sig: cb}),
+            ),
+            patch.object(loop, "remove_signal_handler"),
+            patch(
+                "rentbot.orchestrator.scheduler.run_once",
+                side_effect=invoke_sigterm_twice_then_cancel,
+            ),
+        ):
+            with caplog.at_level(
+                logging.INFO, logger="rentbot.orchestrator.scheduler"
+            ):
+                with pytest.raises((asyncio.CancelledError, BaseException)):
+                    await run_continuous(ctx=ctx, settings=settings)
+
+        shutdown_log_count = sum(
+            1
+            for r in caplog.records
+            if "graceful shutdown requested" in r.message
+        )
+        assert shutdown_log_count == 1, (
+            f"Expected exactly 1 'graceful shutdown requested' log, got {shutdown_log_count}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_complete_message_logged_after_sigterm_shutdown(
+        self, ctx: RunContext, settings: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """'Graceful shutdown complete' is logged in the except block after a SIGTERM."""
+        loop = asyncio.get_running_loop()
+        captured: dict[Any, Any] = {}
+
+        async def invoke_sigterm_then_cancel(**kwargs: object) -> None:
+            if signal.SIGTERM in captured:
+                captured[signal.SIGTERM]()
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(
+                loop,
+                "add_signal_handler",
+                side_effect=lambda sig, cb: captured.update({sig: cb}),
+            ),
+            patch.object(loop, "remove_signal_handler"),
+            patch(
+                "rentbot.orchestrator.scheduler.run_once",
+                side_effect=invoke_sigterm_then_cancel,
+            ),
+        ):
+            with caplog.at_level(
+                logging.INFO, logger="rentbot.orchestrator.scheduler"
+            ):
+                with pytest.raises((asyncio.CancelledError, BaseException)):
+                    await run_continuous(ctx=ctx, settings=settings)
+
+        complete_msgs = [
+            r.message
+            for r in caplog.records
+            if "Graceful shutdown complete" in r.message
+        ]
+        assert complete_msgs, "'Graceful shutdown complete' log line was not emitted"
 
 
 # ---------------------------------------------------------------------------
