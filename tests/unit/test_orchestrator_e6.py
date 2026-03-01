@@ -833,6 +833,202 @@ class TestCycleStatsReport:
 
 
 # ---------------------------------------------------------------------------
+# E6-T5 — Partial provider failure tolerance
+# ---------------------------------------------------------------------------
+
+
+class TestPartialProviderFailureTolerance:
+    """E6-T5: provider context-manager initialisation failures are isolated.
+
+    If one (or more) providers raise during ``__aenter__`` only the affected
+    providers are skipped; the cycle still runs for healthy providers and
+    ``run_once`` does *not* propagate the provider-level exception.
+    """
+
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _base_settings() -> MagicMock:
+        """Minimal settings stub that doesn't require real env vars."""
+        s = MagicMock(spec=Settings)
+        s.database_path = ":memory:"
+        s.database_path_resolved = MagicMock()
+        s.database_path_resolved.parent.mkdir = MagicMock()
+        s.telegram_configured = False
+        s.immobiliare_vrt = None
+        s.casa_search_url = None
+        s.to_filter_criteria.return_value = MagicMock()
+        return s
+
+    @staticmethod
+    def _bad_provider(source_label: str = "immobiliare") -> MagicMock:
+        """Provider whose ``__aenter__`` always raises RuntimeError."""
+        from rentbot.core.models import ListingSource
+
+        p = MagicMock()
+        p.source = ListingSource(source_label)
+        p.__aenter__ = AsyncMock(side_effect=RuntimeError("session init failed"))
+        p.__aexit__ = AsyncMock(return_value=None)
+        return p
+
+    @staticmethod
+    def _good_provider(source_label: str = "casa") -> MagicMock:
+        """Provider whose ``__aenter__`` succeeds and returns itself."""
+        from rentbot.core.models import ListingSource
+
+        p = MagicMock()
+        p.source = ListingSource(source_label)
+        p.__aenter__ = AsyncMock(return_value=p)
+        p.__aexit__ = AsyncMock(return_value=None)
+        return p
+
+    # ------------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_healthy_provider_runs_despite_sibling_init_failure(self) -> None:
+        """One provider fails __aenter__; the other is still passed to run_cycle."""
+        from rentbot.orchestrator.runner import run_once
+
+        bad = self._bad_provider("immobiliare")
+        good = self._good_provider("casa")
+
+        # Capture the providers arg actually passed to run_cycle.
+        captured: list = []
+
+        async def _spy_run_cycle(**kwargs: object) -> CycleStats:
+            captured.extend(kwargs.get("providers", []))
+            return CycleStats()
+
+        fake_conn = AsyncMock()
+        fake_conn.close = AsyncMock()
+
+        with (
+            patch("rentbot.orchestrator.runner.open_db", return_value=fake_conn),
+            patch(
+                "rentbot.orchestrator.runner._build_providers",
+                return_value=[bad, good],
+            ),
+            patch(
+                "rentbot.orchestrator.runner.run_cycle",
+                new=AsyncMock(side_effect=_spy_run_cycle),
+            ),
+        ):
+            await run_once(
+                ctx=RunContext(seed=True, dry_run=False),
+                settings=self._base_settings(),
+            )
+
+        assert good in captured, "Healthy provider must reach run_cycle"
+        assert bad not in captured, "Failed provider must not reach run_cycle"
+
+    @pytest.mark.asyncio
+    async def test_provider_init_failure_does_not_raise_from_run_once(self) -> None:
+        """run_once must not propagate a provider __aenter__ exception."""
+        from rentbot.orchestrator.runner import run_once
+
+        bad = self._bad_provider("immobiliare")
+
+        fake_conn = AsyncMock()
+        fake_conn.close = AsyncMock()
+
+        # Should complete without raising.
+        with (
+            patch("rentbot.orchestrator.runner.open_db", return_value=fake_conn),
+            patch(
+                "rentbot.orchestrator.runner._build_providers",
+                return_value=[bad],
+            ),
+            patch(
+                "rentbot.orchestrator.runner.run_cycle",
+                new=AsyncMock(return_value=CycleStats()),
+            ),
+        ):
+            result = await run_once(
+                ctx=RunContext(seed=True, dry_run=False),
+                settings=self._base_settings(),
+            )
+
+        assert isinstance(result, CycleStats)
+
+    @pytest.mark.asyncio
+    async def test_provider_init_failure_is_logged_at_error_level(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An ERROR-level log line must reference the failing provider and cause."""
+        import logging
+
+        from rentbot.orchestrator.runner import run_once
+
+        bad = self._bad_provider("immobiliare")
+
+        fake_conn = AsyncMock()
+        fake_conn.close = AsyncMock()
+
+        with (
+            patch("rentbot.orchestrator.runner.open_db", return_value=fake_conn),
+            patch(
+                "rentbot.orchestrator.runner._build_providers",
+                return_value=[bad],
+            ),
+            patch(
+                "rentbot.orchestrator.runner.run_cycle",
+                new=AsyncMock(return_value=CycleStats()),
+            ),
+            caplog.at_level(logging.ERROR, logger="rentbot.orchestrator.runner"),
+        ):
+            await run_once(
+                ctx=RunContext(seed=True, dry_run=False),
+                settings=self._base_settings(),
+            )
+
+        error_msgs = " ".join(r.message for r in caplog.records if r.levelno == logging.ERROR)
+        assert "immobiliare" in error_msgs.lower()
+        assert "initialise" in error_msgs or "init" in error_msgs.lower()
+
+    @pytest.mark.asyncio
+    async def test_all_providers_init_failure_cycle_runs_empty(self) -> None:
+        """If every provider fails __aenter__, run_cycle is invoked with []."""
+        from rentbot.orchestrator.runner import run_once
+
+        bad1 = self._bad_provider("immobiliare")
+        bad2 = self._bad_provider("casa")
+
+        captured: list = []
+
+        async def _spy_run_cycle(**kwargs: object) -> CycleStats:
+            captured.extend(kwargs.get("providers", []))
+            return CycleStats()
+
+        fake_conn = AsyncMock()
+        fake_conn.close = AsyncMock()
+
+        with (
+            patch("rentbot.orchestrator.runner.open_db", return_value=fake_conn),
+            patch(
+                "rentbot.orchestrator.runner._build_providers",
+                return_value=[bad1, bad2],
+            ),
+            patch(
+                "rentbot.orchestrator.runner.run_cycle",
+                new=AsyncMock(side_effect=_spy_run_cycle),
+            ),
+        ):
+            result = await run_once(
+                ctx=RunContext(seed=True, dry_run=False),
+                settings=self._base_settings(),
+            )
+
+        # run_cycle received an empty list — no providers reached it.
+        assert captured == []
+        # run_once still returns a valid CycleStats, not an exception.
+        assert isinstance(result, CycleStats)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

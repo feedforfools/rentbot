@@ -237,10 +237,21 @@ async def run_once(
             notifier = Notifier(client=telegram, ctx=ctx)
 
             # 2 — Enter each provider's context (opens per-provider httpx sessions).
+            # Failures here (e.g. network error during session setup) are caught
+            # per-provider so that one broken provider does not abort the whole cycle.
             active_providers: list[BaseProvider] = []
             for provider in providers:
-                active: BaseProvider = await stack.enter_async_context(provider)
-                active_providers.append(active)
+                try:
+                    active: BaseProvider = await stack.enter_async_context(provider)
+                    active_providers.append(active)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "Provider %s: failed to initialise (context enter) — "
+                        "skipping this cycle: %s",
+                        provider.source,
+                        exc,
+                        exc_info=True,
+                    )
 
             # 3 — Run the concurrent poll cycle.
             stats = await run_cycle(
