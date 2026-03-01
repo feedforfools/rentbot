@@ -33,14 +33,20 @@ Typical usage::
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
-from rentbot.core.ids import canonical_id
 from rentbot.core.models import Listing, ListingSource
 from rentbot.core.settings import Settings
 from rentbot.providers.api.http_client import ProviderHttpClient
 from rentbot.providers.base import BaseProvider
+from rentbot.providers.normalizers import (
+    normalise_area_sqm,
+    normalise_price,
+    normalise_rooms,
+    normalise_text,
+    normalise_title,
+    normalise_url,
+)
 
 __all__ = ["ImmobiliareProvider"]
 
@@ -70,49 +76,8 @@ _REFERER: str = "https://www.immobiliare.it/search-list/"
 # ---------------------------------------------------------------------------
 
 
-def _parse_rooms(value: str | None) -> int | None:
-    """Parse an Italian room-count string to an integer.
-
-    Handles values like ``"2"``, ``"3"``, ``"5+"``.  The trailing ``"+"``
-    is stripped and the numeric part is returned.  Returns ``None`` when the
-    input is absent or unparseable.
-
-    Args:
-        value: Raw room string from the API (e.g. ``"5+"``).
-
-    Returns:
-        Integer room count, or ``None``.
-    """
-    if not value:
-        return None
-    stripped = value.strip().rstrip("+").strip()
-    try:
-        return int(stripped)
-    except ValueError:
-        logger.debug("Could not parse rooms value %r", value)
-        return None
-
-
-def _parse_surface(value: str | None) -> int | None:
-    """Extract the numeric floor-area from a string like ``"60 m²"``.
-
-    The regex captures the leading integer; surrounding text (units, spaces,
-    the ``²`` character) is discarded.  Returns ``None`` when the input is
-    absent or contains no digits.
-
-    Args:
-        value: Raw surface string from the API (e.g. ``"60 m²"``).
-
-    Returns:
-        Floor area in square metres as an integer, or ``None``.
-    """
-    if not value:
-        return None
-    match = re.search(r"\d+", value)
-    if match is None:
-        logger.debug("Could not parse surface value %r", value)
-        return None
-    return int(match.group())
+# _parse_rooms and _parse_surface have been consolidated into the shared
+# rentbot.providers.normalizers module (normalise_rooms / normalise_area_sqm).
 
 
 def _detect_furnished(feature_list: list[dict[str, Any]] | None) -> bool | None:
@@ -308,7 +273,7 @@ class ImmobiliareProvider(BaseProvider):
         if not price_block.get("visible", True):
             logger.debug("Skipping listing %s: price not visible", provider_id)
             return None
-        price: int = int(price_block.get("value", 0))
+        price: int = normalise_price(price_block.get("value", 0))
 
         # ------------------------------------------------------------------
         # Properties (first element carries all room/surface/location data)
@@ -316,8 +281,8 @@ class ImmobiliareProvider(BaseProvider):
         props_list: list[dict[str, Any]] = real_estate.get("properties") or []
         props: dict[str, Any] = props_list[0] if props_list else {}
 
-        rooms = _parse_rooms(props.get("rooms"))
-        area_sqm = _parse_surface(props.get("surface"))
+        rooms = normalise_rooms(props.get("rooms"))
+        area_sqm = normalise_area_sqm(props.get("surface"))
 
         location: dict[str, Any] = props.get("location") or {}
         address: str | None = location.get("address") or None
@@ -337,26 +302,29 @@ class ImmobiliareProvider(BaseProvider):
         # ------------------------------------------------------------------
         # Description
         # ------------------------------------------------------------------
-        description: str = props.get("caption") or ""
+        description: str = normalise_text(props.get("caption"))
 
         # ------------------------------------------------------------------
         # URL and title
         # ------------------------------------------------------------------
         seo: dict[str, Any] = result.get("seo") or {}
-        url: str = seo.get("url") or ""
-        if not url:
-            # Construct a fallback URL from the provider ID
-            url = f"{_BASE_URL}/annunci/{provider_id}/"
+        url: str = normalise_url(
+            seo.get("url"),
+            base_url=_BASE_URL,
+            fallback_path=f"/annunci/{provider_id}/",
+        )
 
-        title: str = real_estate.get("title") or f"Listing {provider_id}"
+        title: str = normalise_title(real_estate.get("title"), fallback_id=provider_id)
 
         # ------------------------------------------------------------------
         # Build Listing — catch validation errors to avoid dropping the run
+        # Providers set listing.id to the raw provider-local ID.
+        # The storage layer computes the canonical "<source>:<id>" key via
+        # canonical_id_from_listing() at persistence time.
         # ------------------------------------------------------------------
-        listing_id = canonical_id(ListingSource.IMMOBILIARE, provider_id)
         try:
             return Listing(
-                id=listing_id,
+                id=provider_id,
                 source=ListingSource.IMMOBILIARE,
                 title=title,
                 price=price,

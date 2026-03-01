@@ -44,11 +44,19 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-from rentbot.core.ids import canonical_id
 from rentbot.core.models import Listing, ListingSource
 from rentbot.core.settings import Settings
 from rentbot.providers.api.http_client import ProviderHttpClient
 from rentbot.providers.base import BaseProvider
+from rentbot.providers.normalizers import (
+    furnished_from_text,
+    normalise_area_sqm,
+    normalise_price,
+    normalise_rooms,
+    normalise_text,
+    normalise_title,
+    normalise_url,
+)
 
 __all__ = ["CasaProvider"]
 
@@ -112,36 +120,8 @@ def _extract_initial_state(html: str) -> dict[str, Any]:
     return json.loads(inner_str)  # type: ignore[return-value]
 
 
-def _detect_furnished(description: str | None) -> bool | None:
-    """Infer furnished status from free-text listing description.
-
-    Casa.it does not carry a structured ``furnished`` flag in the search-list
-    data, so we fall back to keyword matching on the Italian description.
-
-    +-----------------------------------+------------------+
-    | keyword pattern                   | furnished result |
-    +===================================+==================+
-    | "non arredato" / "senza arredo"   | ``False``        |
-    +-----------------------------------+------------------+
-    | "arredato" / "arredat"            | ``True``         |
-    +-----------------------------------+------------------+
-    | no match                          | ``None``         |
-    +-----------------------------------+------------------+
-
-    Args:
-        description: Raw description text from the API.
-
-    Returns:
-        ``True`` / ``False`` / ``None``.
-    """
-    if not description:
-        return None
-    text = description.lower()
-    if "non arredato" in text or "senza arredo" in text:
-        return False
-    if "arredat" in text:
-        return True
-    return None
+# _detect_furnished has been consolidated into the shared
+# rentbot.providers.normalizers module as furnished_from_text().
 
 
 def _build_page_path(search_path: str, page: int) -> str:
@@ -306,15 +286,15 @@ class CasaProvider(BaseProvider):
             logger.debug("Casa: skipping listing %s — price not visible", provider_id)
             return None
         try:
-            price = int(price_block.get("value") or 0)
+            price = normalise_price(price_block.get("value"))
         except (TypeError, ValueError):
             price = 0
 
         # ------------------------------------------------------------------
         # Rooms and area
         # ------------------------------------------------------------------
-        rooms: int | None = features.get("rooms")
-        area_sqm: int | None = features.get("mq")
+        rooms: int | None = normalise_rooms(features.get("rooms"))
+        area_sqm: int | None = normalise_area_sqm(features.get("mq"))
 
         # ------------------------------------------------------------------
         # Location
@@ -337,31 +317,38 @@ class CasaProvider(BaseProvider):
         # ------------------------------------------------------------------
         # Description and furnished detection
         # ------------------------------------------------------------------
-        description: str = raw.get("description") or ""
-        furnished = _detect_furnished(description)
+        description: str = normalise_text(raw.get("description"))
+        furnished = furnished_from_text(description)
 
         # ------------------------------------------------------------------
         # Title
         # ------------------------------------------------------------------
         title_block = raw.get("title") or {}
         if isinstance(title_block, dict):
-            title = title_block.get("main") or f"Listing {provider_id}"
+            raw_title: str | None = title_block.get("main")
         else:
-            title = str(title_block) or f"Listing {provider_id}"
+            raw_title = str(title_block) if title_block else None
+        title = normalise_title(raw_title, fallback_id=provider_id)
 
         # ------------------------------------------------------------------
         # URL
         # ------------------------------------------------------------------
         uri_path: str = raw.get("uri") or ""
-        url = _BASE_URL + uri_path if uri_path else f"{_BASE_URL}/immobili/{provider_id}/"
+        url = normalise_url(
+            uri_path or None,
+            base_url=_BASE_URL,
+            fallback_path=f"/immobili/{provider_id}/",
+        )
 
         # ------------------------------------------------------------------
         # Build Listing — catch validation errors to avoid dropping the run
+        # Providers set listing.id to the raw provider-local ID.
+        # The storage layer computes the canonical "<source>:<id>" key via
+        # canonical_id_from_listing() at persistence time.
         # ------------------------------------------------------------------
-        listing_id = canonical_id(ListingSource.CASA, provider_id)
         try:
             return Listing(
-                id=listing_id,
+                id=provider_id,
                 source=ListingSource.CASA,
                 title=title,
                 price=price,
