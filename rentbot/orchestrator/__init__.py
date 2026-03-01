@@ -14,12 +14,22 @@ Public API
   jitter helpers; also exposed for testing.
 * :class:`~rentbot.orchestrator.circuit_breaker.CircuitBreakerRegistry` —
   per-provider circuit breaker with exponential backoff.
+* :class:`~rentbot.orchestrator.metrics.LifetimeStats` /
+  :class:`~rentbot.orchestrator.metrics.ProviderLifetimeStats` —
+  cumulative cross-cycle statistics tracker (E8-T5).
+* :func:`~rentbot.orchestrator.metrics.write_stats_file` — serialise
+  lifetime stats to a JSON file for operator inspection.
 """
 
 from rentbot.orchestrator.circuit_breaker import (
     CircuitBreakerRegistry,
     CircuitState,
     ProviderCircuitState,
+)
+from rentbot.orchestrator.metrics import (
+    LifetimeStats,
+    ProviderLifetimeStats,
+    write_stats_file,
 )
 from rentbot.orchestrator.pipeline import (
     CycleStats,
@@ -52,4 +62,8 @@ __all__ = [
     "process_listing",
     "run_cycle",
     "run_provider",
+    # Lifetime metrics (E8-T5)
+    "LifetimeStats",
+    "ProviderLifetimeStats",
+    "write_stats_file",
 ]

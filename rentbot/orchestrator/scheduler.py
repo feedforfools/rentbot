@@ -48,6 +48,7 @@ from typing import NoReturn
 from rentbot.core.run_context import RunContext
 from rentbot.core.settings import Settings
 from rentbot.orchestrator.circuit_breaker import CircuitBreakerRegistry
+from rentbot.orchestrator.metrics import LifetimeStats, write_stats_file
 from rentbot.orchestrator.runner import run_once
 
 __all__ = [
@@ -169,20 +170,32 @@ async def _api_loop(ctx: RunContext, settings: Settings) -> NoReturn:
     )
 
     circuit_breaker = CircuitBreakerRegistry()
+    lifetime_stats = LifetimeStats()
+    _cycles_completed: int = 0
 
     while True:
         try:
-            await run_once(
+            cycle_stats = await run_once(
                 ctx=ctx,
                 settings=settings,
                 circuit_breaker=circuit_breaker,
             )
+            lifetime_stats.update(cycle_stats)
         except Exception:
             logger.exception("Unhandled exception in API cycle — will retry after interval.")
 
-        # Write heartbeat after every iteration (success or failure) so the
-        # Docker health check can confirm the process is alive and looping.
+        # Write heartbeat and stats file after every iteration (success or
+        # failure) so both the Docker health check and monitoring tools stay
+        # current.  Errors in either write are logged, never propagated.
         _write_heartbeat()
+        write_stats_file(lifetime_stats)
+
+        _cycles_completed += 1
+        # Log cumulative summary at INFO every 10 cycles; DEBUG otherwise.
+        if _cycles_completed % 10 == 0:
+            logger.info("%s", lifetime_stats.format_summary())
+        else:
+            logger.debug("%s", lifetime_stats.format_summary())
 
         cb_summary = circuit_breaker.summary()
         if cb_summary:
