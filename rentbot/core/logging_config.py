@@ -18,10 +18,22 @@ import logging
 import os
 import sys
 import traceback
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
-__all__ = ["configure_logging", "JsonFormatter"]
+__all__ = ["configure_logging", "JsonFormatter", "CYCLE_ID_CTX", "CycleContextFilter"]
+
+# ---------------------------------------------------------------------------
+# Cycle-scoped context variable
+# ---------------------------------------------------------------------------
+
+#: Async-safe context variable that holds the current poll-cycle identifier.
+#: Set to a short hex string (``uuid4().hex[:8]``) at the start of every call
+#: to :func:`~rentbot.orchestrator.runner.run_once`; automatically inherited
+#: by all child tasks spawned via ``asyncio.gather``.  Defaults to ``"-"``
+#: outside of any cycle (startup, teardown, tests).
+CYCLE_ID_CTX: ContextVar[str] = ContextVar("cycle_id", default="-")
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -33,8 +45,41 @@ _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 _VALID_FORMATS = {"text", "json"}
 
 # Human-readable text format used in ``text`` mode.
-_TEXT_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
+# ``%(cycle_id)s`` is injected by :class:`CycleContextFilter` and resolves to
+# the current cycle correlation ID (e.g. ``a3f2b1c0``) or ``-`` outside cycles.
+_TEXT_FORMAT = "%(asctime)s %(levelname)-8s [%(cycle_id)s] %(name)s: %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+class CycleContextFilter(logging.Filter):
+    """Inject the current poll-cycle ID into every log record.
+
+    Reads :data:`CYCLE_ID_CTX` from the async context and sets
+    ``record.cycle_id`` before the record reaches any formatter.  This means:
+
+    * **Text format** — the ``%(cycle_id)s`` token in :data:`_TEXT_FORMAT`
+      resolves to the 8-char hex cycle ID (or ``"-"`` outside a cycle).
+    * **JSON format** — ``cycle_id`` appears in the ``"extra"`` object of the
+      emitted JSON line, making it trivial to group records by cycle in any
+      log aggregator.
+
+    The filter is installed on every handler by :func:`configure_logging`.
+    Because the filter is on the *handler* (not the logger), it runs just
+    before formatting, after propagation — ensuring every handler that goes
+    through ``configure_logging`` gets the attribute.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        """Attach ``cycle_id`` to *record* and allow all records through.
+
+        Args:
+            record: The log record being processed.
+
+        Returns:
+            Always ``True`` — this filter never suppresses records.
+        """
+        record.cycle_id = CYCLE_ID_CTX.get("-")
+        return True
 
 
 def configure_logging(
@@ -84,6 +129,9 @@ def configure_logging(
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(resolved_level)
+    # Inject cycle_id from async ContextVar into every log record so that
+    # the text format and JSON "extra" both carry the correlation ID.
+    handler.addFilter(CycleContextFilter())
 
     if resolved_fmt == "json":
         handler.setFormatter(JsonFormatter())

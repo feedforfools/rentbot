@@ -71,6 +71,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
+from rentbot.core import events
 from rentbot.core.exceptions import ListingAlreadyExistsError
 from rentbot.core.models import Listing
 from rentbot.core.run_context import RunContext
@@ -256,7 +257,9 @@ async def process_listing(
     # ------------------------------------------------------------------
     if await repo.exists(cid):
         stats.duplicate += 1
-        logger.debug("DEDUP  %s — already seen, skipping", cid)
+        logger.debug(
+            "DEDUP  %s — already seen, skipping", cid, extra={"event": events.LISTING_DUPLICATE}
+        )
         return
 
     # ------------------------------------------------------------------
@@ -269,10 +272,15 @@ async def process_listing(
         # our exists() check and insert() call.  This should not happen with
         # sequential per-provider processing but guard it anyway.
         stats.duplicate += 1
-        logger.debug("DEDUP  %s — insert race, treated as duplicate", cid)
+        logger.debug(
+            "DEDUP  %s — insert race, treated as duplicate",
+            cid,
+            extra={"event": events.LISTING_DUPLICATE},
+        )
         return
 
     stats.new += 1
+    logger.debug("STORE  %s — new listing inserted", cid, extra={"event": events.LISTING_NEW})
 
     # ------------------------------------------------------------------
     # Stage 3 — Heuristic filter
@@ -286,6 +294,7 @@ async def process_listing(
             "FILTER DROP  %s — %s",
             cid,
             filter_result.reason,
+            extra={"event": events.LISTING_FILTERED},
         )
         return
 
@@ -302,6 +311,7 @@ async def process_listing(
             "Notification failed for %s — incrementing error counter: %s",
             cid,
             exc,
+            extra={"event": events.LISTING_NOTIFY_ERROR},
         )
         stats.errors += 1
         return
@@ -309,6 +319,11 @@ async def process_listing(
     if sent:
         await repo.mark_notified(cid)
         stats.alerted += 1
+        logger.debug(
+            "ALERT  %s — notification sent and row marked",
+            cid,
+            extra={"event": events.LISTING_ALERTED},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +376,7 @@ async def run_provider(
         logger.info(
             "Provider %s: circuit OPEN — skipping this cycle.",
             source_label,
+            extra={"event": events.PROVIDER_CIRCUIT_OPEN},
         )
         stats.provider_failed = True
         return stats
@@ -376,6 +392,7 @@ async def run_provider(
             source_label,
             exc,
             exc_info=True,
+            extra={"event": events.PROVIDER_FETCH_ERROR},
         )
         if circuit_breaker is not None:
             circuit_breaker.record_failure(source_label)
@@ -391,6 +408,7 @@ async def run_provider(
         "Provider %s: fetched %d listing(s)",
         source_label,
         stats.fetched,
+        extra={"event": events.PROVIDER_FETCH_OK},
     )
 
     # ------------------------------------------------------------------
@@ -418,6 +436,7 @@ async def run_provider(
         stats.passed_filter,
         stats.alerted,
         stats.errors,
+        extra={"event": events.PROVIDER_DONE},
     )
     return stats
 

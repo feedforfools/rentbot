@@ -1,5 +1,6 @@
 """Core domain models, settings, logging configuration, and shared utilities."""
 
+from rentbot.core import events
 from rentbot.core.criteria import FilterCriteria
 from rentbot.core.exceptions import (
     BrowserProviderError,
@@ -20,7 +21,12 @@ from rentbot.core.exceptions import (
     TelegramRateLimitError,
 )
 from rentbot.core.ids import canonical_id, canonical_id_from_listing
-from rentbot.core.logging_config import JsonFormatter, configure_logging
+from rentbot.core.logging_config import (
+    CYCLE_ID_CTX,
+    CycleContextFilter,
+    JsonFormatter,
+    configure_logging,
+)
 from rentbot.core.models import Listing, ListingSource
 from rentbot.core.run_context import RunContext
 from rentbot.core.settings import Settings
@@ -29,6 +35,10 @@ __all__ = [
     # Logging
     "configure_logging",
     "JsonFormatter",
+    "CYCLE_ID_CTX",
+    "CycleContextFilter",
+    # Events
+    "events",
     # Domain models
     "Listing",
     "ListingSource",

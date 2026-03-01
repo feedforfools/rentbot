@@ -58,9 +58,12 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from contextlib import AsyncExitStack
 
+from rentbot.core import events
 from rentbot.core.exceptions import ConfigError
+from rentbot.core.logging_config import CYCLE_ID_CTX
 from rentbot.core.run_context import RunContext
 from rentbot.core.settings import Settings
 from rentbot.filters.heuristic import HeuristicFilter
@@ -168,17 +171,38 @@ async def run_once(
         settings = Settings()
 
     t0: float = time.monotonic()
+    cycle_id: str = uuid.uuid4().hex[:8]
+    cycle_token = CYCLE_ID_CTX.set(cycle_id)
 
+    try:
+        return await _run_once_inner(ctx, settings, circuit_breaker, t0)
+    finally:
+        CYCLE_ID_CTX.reset(cycle_token)
+
+
+async def _run_once_inner(
+    ctx: RunContext,
+    settings: Settings,
+    circuit_breaker: CircuitBreakerRegistry | None,
+    t0: float,
+) -> CycleStats:
+    """Inner implementation of :func:`run_once` — called after cycle_id is set."""
     logger.info(
-        "run_once starting — mode=%s db=%s",
+        "run_once starting — mode=%s db=%s cycle_id=%s",
         ctx.mode_label,
         settings.database_path,
+        CYCLE_ID_CTX.get("-"),
+        extra={"event": events.CYCLE_START},
     )
 
     # ------------------------------------------------------------------
     # Guard: live mode requires Telegram credentials.
     # ------------------------------------------------------------------
     if ctx.should_notify and not settings.telegram_configured:
+        logger.error(
+            "Aborting cycle — Telegram credentials required for live mode.",
+            extra={"event": events.CYCLE_ABORT},
+        )
         raise ConfigError(
             "Live mode requires Telegram credentials. "
             "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env (or env vars)."
@@ -246,6 +270,7 @@ async def run_once(
                         provider.source,
                         exc,
                         exc_info=True,
+                        extra={"event": events.PROVIDER_INIT_ERROR},
                     )
 
             # 3 — Run the concurrent poll cycle.
@@ -259,7 +284,11 @@ async def run_once(
             )
 
         stats.duration_s = time.monotonic() - t0
-        logger.info("%s", stats.format_cycle_report())
+        logger.info(
+            "%s",
+            stats.format_cycle_report(),
+            extra={"event": events.CYCLE_COMPLETE},
+        )
         for ps in stats.provider_stats:
             logger.debug(
                 "  provider %-20s fetched=%-3d new=%-3d dup=%-3d "
