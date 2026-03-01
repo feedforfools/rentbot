@@ -4,21 +4,28 @@ These tests exercise the full :class:`~rentbot.notifiers.telegram.TelegramClient
 → :class:`~rentbot.notifiers.notifier.Notifier` → Telegram API round-trip
 using real HTTP against the live Bot API endpoint.
 
-Credentials
------------
-Tests that require a real connection are **automatically skipped** if
-``TELEGRAM_BOT_TOKEN`` or ``TELEGRAM_CHAT_ID`` are not present in the
-environment (or in a ``.env`` file in the project root).
+Default behaviour
+-----------------
+All tests in this module are marked ``@pytest.mark.integration`` and are
+**excluded from the default test run** (``addopts = "-m 'not integration'"``
+in ``pyproject.toml``).  This prevents Telegram spam during routine ``pytest``
+invocations.
 
-To run only the integration tests::
+Run on demand
+-------------
+To run *only* the integration tests::
 
     pytest -m integration
 
-To exclude integration tests from a normal run::
+To run the full suite including integration tests::
 
-    pytest -m "not integration"
+    pytest -m ""
 
-The dry-run variant does *not* require credentials and is always executed.
+Credentials
+-----------
+Tests that require a real connection are skipped if ``TELEGRAM_BOT_TOKEN``
+or ``TELEGRAM_CHAT_ID`` are not present in the environment (or in a ``.env``
+file in the project root).
 """
 
 from __future__ import annotations
