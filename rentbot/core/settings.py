@@ -146,6 +146,23 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # Casa.it
+    # ------------------------------------------------------------------
+    casa_search_url: str = Field(
+        default="",
+        description=(
+            "Full URL of the Casa.it search-results page to monitor.  Example: "
+            "``https://www.casa.it/affitto/residenziale/pordenone/``.  "
+            "Leave empty to disable the Casa provider."
+        ),
+    )
+    casa_max_pages: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum number of paginated result pages to fetch per poll.",
+    )
+
+    # ------------------------------------------------------------------
     # Search parameters
     # ------------------------------------------------------------------
     search_city: str = Field(
