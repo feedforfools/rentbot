@@ -181,12 +181,26 @@ def _casa_state(
     listings: list[dict[str, Any]],
     total_pages: int = 1,
 ) -> dict[str, Any]:
-    """Build a synthetic Casa.it ``window.__INITIAL_STATE__`` state dict."""
+    """Build a synthetic Casa.it ``window.__INITIAL_STATE__`` state dict (path SRP)."""
     return {
         "search": {
             "list": listings,
             "paginator": {"totalPages": total_pages},
         }
+    }
+
+
+def _casa_map_state(
+    listings: list[dict[str, Any]],
+    total_pages: int = 1,
+) -> dict[str, Any]:
+    """Build a synthetic Casa.it state dict using the map SRP layout (``searchMap``)."""
+    return {
+        "search": {},
+        "searchMap": {
+            "list": listings,
+            "paginator": {"totalPages": total_pages},
+        },
     }
 
 
@@ -636,6 +650,70 @@ class TestCasaProviderFetchLatest:
         listings = await provider.fetch_latest()
 
         assert listings == []
+
+    async def test_search_map_state_fallback(self) -> None:
+        """Map-based SRP pages use ``searchMap`` instead of ``search``.
+        The provider must fall back to ``searchMap`` when ``search`` is empty."""
+        settings = _minimal_settings(casa_max_pages=1)
+        state = _casa_map_state([_casa_listing_dict(provider_id="map01")])
+        http = _mock_http_get(_mock_response(text=_casa_html(state)))
+        provider = self._make_provider(settings, http)
+
+        listings = await provider.fetch_latest()
+
+        assert len(listings) == 1
+        assert listings[0].id == "map01"
+
+    async def test_query_string_url_preserved_verbatim(self) -> None:
+        """When CASA_SEARCH_URL contains query params (e.g. /srp/map/?geopolygon=…),
+        the raw query string must be forwarded verbatim — not re-encoded via
+        parse_qs → httpx params, which subtly changes percent-encoding."""
+        raw_query = "tr=affitti&geopolygon=%7B%22polygon%22%3A%5B%5D%7D&sort=date"
+        search_url = f"https://www.casa.it/srp/map/?{raw_query}"
+        settings = _minimal_settings(casa_search_url=search_url, casa_max_pages=1)
+        state = _casa_state([_casa_listing_dict()])
+        http = _mock_http_get(_mock_response(text=_casa_html(state)))
+        provider = self._make_provider(settings, http)
+
+        listings = await provider.fetch_latest()
+
+        assert len(listings) == 1
+        # Verify the path sent to http.get contains the original query string.
+        call_args = http.get.call_args
+        requested_path = call_args.args[0] if call_args.args else call_args.kwargs.get("url", "")
+        assert raw_query in requested_path, (
+            f"Expected raw query string to be preserved in request path, got: {requested_path!r}"
+        )
+        # params= should be None (query is already embedded in path).
+        requested_params = call_args.kwargs.get("params")
+        assert requested_params is None, (
+            f"Expected params=None for query-string URLs, got: {requested_params!r}"
+        )
+
+    async def test_query_string_url_pagination_appends_page(self) -> None:
+        """Page 2+ for query-string URLs should append &page=N to the raw query."""
+        raw_query = "tr=affitti&geopolygon=%7B%7D"
+        search_url = f"https://www.casa.it/srp/map/?{raw_query}"
+        settings = _minimal_settings(casa_search_url=search_url, casa_max_pages=2)
+        state_p1 = _casa_state([_casa_listing_dict(provider_id="q1")], total_pages=2)
+        state_p2 = _casa_state([_casa_listing_dict(provider_id="q2")], total_pages=2)
+        http = _mock_http_get(
+            _mock_response(text=_casa_html(state_p1)),
+            _mock_response(text=_casa_html(state_p2)),
+        )
+        provider = self._make_provider(settings, http)
+
+        listings = await provider.fetch_latest()
+
+        assert len(listings) == 2
+        # Page 1: raw query only.
+        p1_path = http.get.call_args_list[0].args[0]
+        assert raw_query in p1_path
+        assert "page=" not in p1_path
+        # Page 2: raw query + &page=2.
+        p2_path = http.get.call_args_list[1].args[0]
+        assert raw_query in p2_path
+        assert "&page=2" in p2_path
 
 
 # ---------------------------------------------------------------------------

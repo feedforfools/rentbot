@@ -42,7 +42,7 @@ import json
 import logging
 import re
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from rentbot.core.models import Listing, ListingSource
 from rentbot.core.settings import Settings
@@ -196,17 +196,15 @@ class CasaProvider(BaseProvider):
 
         parsed_url = urlparse(self._settings.casa_search_url)
         search_path = parsed_url.path
-        # Flatten parse_qs lists (each key maps to a single-item list) into
-        # a plain {str: str} dict so httpx can re-encode them cleanly.
-        base_query_params: dict[str, str] = (
-            {k: v[0] for k, v in parse_qs(parsed_url.query, keep_blank_values=True).items()}
-            if parsed_url.query
-            else {}
-        )
+        # Keep the *raw* query string exactly as the user configured it.
+        # Re-parsing with ``parse_qs`` + re-encoding via httpx ``params=``
+        # subtly changes percent-encoding (e.g. ``:`` → ``%3A``,
+        # ``,`` → ``%2C``) which may cause Casa.it to return an error page.
+        raw_query: str = parsed_url.query or ""
         # Detect the pagination style from the configured URL:
-        # * Query-string URLs (e.g. /srp/map/?geopolygon=…) page via ?page=N.
+        # * Query-string URLs (e.g. /srp/map/?geopolygon=…) page via &page=N.
         # * Plain path URLs (e.g. /affitto/residenziale/pordenone/) page via /N/.
-        uses_query_params: bool = bool(base_query_params)
+        uses_query_params: bool = bool(raw_query)
 
         listings: list[Listing] = []
         seen_ids: set[str] = set()
@@ -214,10 +212,10 @@ class CasaProvider(BaseProvider):
 
         for page in range(1, max_pages + 1):
             if uses_query_params:
-                path = search_path
-                page_params: dict[str, Any] = {**base_query_params}
-                if page > 1:
-                    page_params["page"] = str(page)
+                # Build the full path+query ourselves to preserve encoding.
+                query = raw_query if page == 1 else f"{raw_query}&page={page}"
+                path = f"{search_path}?{query}"
+                page_params: dict[str, Any] = {}
             else:
                 path = _build_page_path(search_path, page)
                 page_params = {}
@@ -239,14 +237,29 @@ class CasaProvider(BaseProvider):
             try:
                 state = _extract_initial_state(response.text)
             except (ValueError, json.JSONDecodeError) as exc:
-                logger.error(
-                    "Casa: failed to parse __INITIAL_STATE__ on page %d: %s",
-                    page,
-                    exc,
-                )
+                # Page 1 failure is an error; subsequent pages may legitimately
+                # differ in structure (e.g. map-mode pagination serves a
+                # different page layout on page 2+) — log as warning and stop.
+                if page == 1:
+                    logger.error(
+                        "Casa: failed to parse __INITIAL_STATE__ on page %d: %s",
+                        page,
+                        exc,
+                    )
+                else:
+                    logger.warning(
+                        "Casa: __INITIAL_STATE__ absent on page %d (pagination "
+                        "may use a different page layout) — stopping: %s",
+                        page,
+                        exc,
+                    )
                 break
 
-            search_state: dict[str, Any] = state.get("search") or {}
+            # Casa.it uses ``state["search"]`` for path-based SRP pages
+            # (e.g. /affitto/residenziale/pordenone/) and ``state["searchMap"]``
+            # for map-based SRP pages (e.g. /srp/map/?geopolygon=…).  The
+            # listing object schema is identical in both variants.
+            search_state: dict[str, Any] = state.get("search") or state.get("searchMap") or {}
             raw_list: list[dict[str, Any]] = search_state.get("list") or []
             paginator: dict[str, Any] = search_state.get("paginator") or {}
             total_pages: int = int(paginator.get("totalPages", 1))
