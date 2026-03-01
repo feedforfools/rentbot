@@ -17,7 +17,7 @@ PYTEST   := $(PYTHON) -m pytest
 SRC      := rentbot/
 TESTS    := tests/
 
-.PHONY: all check lint format-check typecheck test test-integration test-all fix help
+.PHONY: all check lint format-check typecheck test test-integration test-all fix reset-db help
 
 # ---------------------------------------------------------------------------
 # Composite targets
@@ -60,6 +60,20 @@ test-integration:  ## Run integration tests (requires external credentials in .e
 
 test-all:  ## Run unit + integration tests.
 	$(PYTEST) -m "" $(TESTS) -v
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+
+DB_PATH := data/rentbot.db
+
+reset-db:  ## Delete the SQLite database so the next run starts fresh.
+	@if [ -f "$(DB_PATH)" ]; then \
+		rm -f "$(DB_PATH)" "$(DB_PATH)-wal" "$(DB_PATH)-shm"; \
+		echo "Deleted $(DB_PATH) (and WAL/SHM files)."; \
+	else \
+		echo "$(DB_PATH) does not exist — nothing to delete."; \
+	fi
 
 # ---------------------------------------------------------------------------
 # Help
