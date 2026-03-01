@@ -12,11 +12,14 @@ orchestrator.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import sys
 
 from rentbot.core import configure_logging
+from rentbot.core.exceptions import ConfigError
 from rentbot.core.run_context import RunContext
+from rentbot.core.settings import Settings
 
 
 def main() -> None:
@@ -67,9 +70,18 @@ def main() -> None:
     ctx = RunContext(seed=args.seed, dry_run=args.dry_run)
     logger.info("Run context: %s", ctx)
 
-    # TODO (E6-T1): replace with orchestrator.run(ctx=ctx)
-    logger.warning("Orchestrator not yet implemented — exiting")
-    sys.exit(0)
+    # Lazy import keeps startup fast when module is imported without running.
+    from rentbot.orchestrator.runner import run_once  # noqa: PLC0415
+
+    settings = Settings()
+    try:
+        asyncio.run(run_once(ctx=ctx, settings=settings))
+    except ConfigError as exc:
+        logger.critical("Configuration error: %s", exc)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        logger.info("Interrupted — exiting.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
