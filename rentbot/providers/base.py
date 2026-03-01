@@ -65,7 +65,7 @@ class BaseProvider(ABC):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def close(self) -> None:
+    async def close(self) -> None:  # noqa: B027
         """Release any resources held by this provider.
 
         The default implementation is a no-op.  Override in subclasses that
@@ -73,7 +73,7 @@ class BaseProvider(ABC):
         similar long-lived resource.
         """
 
-    async def __aenter__(self) -> "BaseProvider":
+    async def __aenter__(self) -> BaseProvider:
         """Enter the async context manager.  Returns ``self``."""
         return self
 

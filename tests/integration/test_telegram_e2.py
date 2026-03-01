@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from dotenv import load_dotenv
@@ -98,7 +98,7 @@ def mock_listing() -> Listing:
             "This is NOT a real listing — safe to ignore. "
             "A real alert would show full property details and contact info here."
         ),
-        listing_date=datetime(2026, 2, 28, 12, 0, 0, tzinfo=timezone.utc),
+        listing_date=datetime(2026, 2, 28, 12, 0, 0, tzinfo=UTC),
     )
 
 
@@ -118,10 +118,9 @@ def bulk_mock_listings() -> list[Listing]:
             furnished=bool(i % 2),
             url=f"https://www.immobiliare.it/annunci/{9000 + i}/",
             description=(
-                f"Batch integration test listing #{i}/3. "
-                "⚠️ Automated test — safe to ignore."
+                f"Batch integration test listing #{i}/3. ⚠️ Automated test — safe to ignore."
             ),
-            listing_date=datetime(2026, 2, 28, 12, i, 0, tzinfo=timezone.utc),
+            listing_date=datetime(2026, 2, 28, 12, i, 0, tzinfo=UTC),
         )
         for i in range(1, 4)
     ]
@@ -278,6 +277,4 @@ class TestTelegramIntegration:
         assert result is False, (
             "send_alert must return False in seed mode — no message should be sent."
         )
-        logger.info(
-            "Seed-mode suppression test passed — no message sent despite live credentials."
-        )
+        logger.info("Seed-mode suppression test passed — no message sent despite live credentials.")

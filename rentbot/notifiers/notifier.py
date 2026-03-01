@@ -94,9 +94,7 @@ class Notifier:
         min_interval_s: float = _DEFAULT_MIN_INTERVAL,
     ) -> None:
         if min_interval_s < 0:
-            raise ValueError(
-                f"min_interval_s must be ≥ 0, got {min_interval_s!r}."
-            )
+            raise ValueError(f"min_interval_s must be ≥ 0, got {min_interval_s!r}.")
         self._client = client
         self._ctx = ctx
         self._min_interval_s = min_interval_s

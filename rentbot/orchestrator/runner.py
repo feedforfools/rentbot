@@ -114,17 +114,13 @@ def _build_providers(settings: Settings) -> list[BaseProvider]:
         providers.append(ImmobiliareProvider(settings))
         logger.debug("Immobiliare provider enabled.")
     else:
-        logger.info(
-            "Immobiliare provider disabled — set IMMOBILIARE_VRT in .env to enable."
-        )
+        logger.info("Immobiliare provider disabled — set IMMOBILIARE_VRT in .env to enable.")
 
     if settings.casa_search_url:
         providers.append(CasaProvider(settings))
         logger.debug("Casa provider enabled.")
     else:
-        logger.info(
-            "Casa provider disabled — set CASA_SEARCH_URL in .env to enable."
-        )
+        logger.info("Casa provider disabled — set CASA_SEARCH_URL in .env to enable.")
 
     return providers
 
@@ -200,8 +196,7 @@ async def run_once(
         tg_token = _PLACEHOLDER_TOKEN
         tg_chat_id = _PLACEHOLDER_CHAT_ID
         logger.debug(
-            "Telegram not configured — using placeholder credentials "
-            "(safe in %s mode).",
+            "Telegram not configured — using placeholder credentials (safe in %s mode).",
             ctx.mode_label,
         )
 

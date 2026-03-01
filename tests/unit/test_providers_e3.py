@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -441,9 +441,7 @@ class TestImmobiliareProviderFetchLatest:
 
     async def test_hidden_price_listing_omitted(self) -> None:
         settings = _minimal_settings(immobiliare_max_pages=1)
-        page = _immobiliare_page(
-            [_immobiliare_result(price_visible=False)], max_pages=1
-        )
+        page = _immobiliare_page([_immobiliare_result(price_visible=False)], max_pages=1)
         http = _mock_http_get(_mock_response(json_data=page))
         provider = self._make_provider(settings, http)
 
@@ -472,9 +470,7 @@ class TestCasaExtractInitialState:
             _extract_initial_state("<html><body>No state here</body></html>")
 
     def test_unicode_characters_survive_round_trip(self) -> None:
-        state = _casa_state(
-            [_casa_listing_dict(description="Città di Pordenone — appartamento.")]
-        )
+        state = _casa_state([_casa_listing_dict(description="Città di Pordenone — appartamento.")])
         html = _casa_html(state)
         result = _extract_initial_state(html)
         listing = result["search"]["list"][0]
@@ -485,16 +481,22 @@ class TestCasaBuildPagePath:
     """Unit tests for ``_build_page_path``."""
 
     def test_page_1_returns_unmodified_path(self) -> None:
-        assert _build_page_path("/affitto/residenziale/pordenone/", 1) == \
-               "/affitto/residenziale/pordenone/"
+        assert (
+            _build_page_path("/affitto/residenziale/pordenone/", 1)
+            == "/affitto/residenziale/pordenone/"
+        )
 
     def test_page_2_appends_page_segment(self) -> None:
-        assert _build_page_path("/affitto/residenziale/pordenone/", 2) == \
-               "/affitto/residenziale/pordenone/2/"
+        assert (
+            _build_page_path("/affitto/residenziale/pordenone/", 2)
+            == "/affitto/residenziale/pordenone/2/"
+        )
 
     def test_page_3_appends_correct_number(self) -> None:
-        assert _build_page_path("/affitto/residenziale/pordenone/", 3) == \
-               "/affitto/residenziale/pordenone/3/"
+        assert (
+            _build_page_path("/affitto/residenziale/pordenone/", 3)
+            == "/affitto/residenziale/pordenone/3/"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -673,6 +675,7 @@ def _make_mock_notifier(*, send_returns: bool = True, raises: bool = False) -> A
     notifier: AsyncMock = AsyncMock(spec=Notifier)
     if raises:
         from rentbot.core.exceptions import TelegramError
+
         notifier.send_alert.side_effect = TelegramError("send failed")
     else:
         notifier.send_alert.return_value = send_returns
@@ -713,10 +716,16 @@ class TestProcessListing:
         call_order: list[str] = []
         listing = _make_listing()
         repo = _make_mock_repo(exists=False)
-        repo.insert.side_effect = lambda l, **kw: call_order.append("insert") or "cid"  # type: ignore[misc]
+        repo.insert.side_effect = lambda _lst, **kw: call_order.append("insert") or "cid"  # type: ignore[misc]
         hf = _make_mock_hf(passed=False)
-        hf.evaluate.side_effect = lambda l: call_order.append("evaluate") or FilterResult(  # type: ignore[assignment]
-            passed=False, reason="price_too_high", listing_id=l.id, source=str(l.source)
+        hf.evaluate.side_effect = lambda _listing: (
+            call_order.append("evaluate")
+            or FilterResult(  # type: ignore[assignment]
+                passed=False,
+                reason="price_too_high",
+                listing_id=_listing.id,
+                source=str(_listing.source),
+            )
         )
         notifier = _make_mock_notifier()
         stats = ProviderCycleStats(source="immobiliare")

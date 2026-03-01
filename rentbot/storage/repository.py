@@ -28,7 +28,7 @@ Typical usage::
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiosqlite
 
@@ -132,7 +132,7 @@ class ListingRepository:
         if await self.exists(cid):
             raise ListingAlreadyExistsError(cid)
 
-        now_utc = datetime.now(timezone.utc).isoformat()
+        now_utc = datetime.now(UTC).isoformat()
         raw_json = listing.model_dump_json()
 
         await self._conn.execute(
@@ -187,7 +187,7 @@ class ListingRepository:
         if not listings:
             return []
 
-        cids = [canonical_id_from_listing(l) for l in listings]
+        cids = [canonical_id_from_listing(listing) for listing in listings]
 
         # Determine which canonical IDs are already in the DB before inserting.
         placeholders = ",".join("?" * len(cids))
@@ -200,7 +200,7 @@ class ListingRepository:
 
         new_pairs = [
             (listing, cid)
-            for listing, cid in zip(listings, cids)
+            for listing, cid in zip(listings, cids, strict=True)
             if cid not in existing
         ]
 
@@ -211,7 +211,7 @@ class ListingRepository:
             )
             return []
 
-        now_utc = datetime.now(timezone.utc).isoformat()
+        now_utc = datetime.now(UTC).isoformat()
         rows = [
             (
                 cid,

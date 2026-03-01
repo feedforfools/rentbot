@@ -43,9 +43,9 @@ Scenarios
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import AsyncGenerator
 
 import pytest
 
@@ -55,7 +55,7 @@ from rentbot.core.run_context import RunContext
 from rentbot.filters.heuristic import HeuristicFilter
 from rentbot.notifiers.notifier import Notifier
 from rentbot.notifiers.telegram import TelegramClient
-from rentbot.orchestrator.pipeline import CycleStats, run_cycle
+from rentbot.orchestrator.pipeline import run_cycle
 from rentbot.providers.base import BaseProvider
 from rentbot.storage.database import open_db
 from rentbot.storage.repository import ListingRepository
@@ -158,7 +158,7 @@ def _make_listing(
         url=url,
         image_url=None,
         description="Appartamento in ottimo stato.",
-        listing_date=datetime(2026, 3, 1, 10, 0, 0, tzinfo=timezone.utc),
+        listing_date=datetime(2026, 3, 1, 10, 0, 0, tzinfo=UTC),
     )
 
 
@@ -249,11 +249,9 @@ class TestNewListingPassesFilter:
         listing = _make_listing(listing_id="s1-store", price=_PRICE_WITHIN)
         provider = _FakeProvider(ListingSource.IMMOBILIARE, [listing])
 
-        await run_cycle(
-            providers=[provider], repo=repo, hf=hf, notifier=dry_run_notifier, ctx=ctx
-        )
+        await run_cycle(providers=[provider], repo=repo, hf=hf, notifier=dry_run_notifier, ctx=ctx)
 
-        cid = f"immobiliare:s1-store"
+        cid = "immobiliare:s1-store"
         assert await repo.exists(cid), "Listing should be stored in the dedup DB"
 
 
@@ -304,9 +302,7 @@ class TestDuplicateDetection:
         provider = _FakeProvider(ListingSource.IMMOBILIARE, [listing])
 
         # Prime the DB.
-        await run_cycle(
-            providers=[provider], repo=repo, hf=hf, notifier=dry_run_notifier, ctx=ctx
-        )
+        await run_cycle(providers=[provider], repo=repo, hf=hf, notifier=dry_run_notifier, ctx=ctx)
         # Second run — duplicate must not register as an error.
         stats2 = await run_cycle(
             providers=[provider], repo=repo, hf=hf, notifier=dry_run_notifier, ctx=ctx
@@ -353,9 +349,7 @@ class TestListingFailsFilter:
         listing = _make_listing(listing_id="s3-indb", price=_PRICE_TOO_HIGH)
         provider = _FakeProvider(ListingSource.IMMOBILIARE, [listing])
 
-        await run_cycle(
-            providers=[provider], repo=repo, hf=hf, notifier=dry_run_notifier, ctx=ctx
-        )
+        await run_cycle(providers=[provider], repo=repo, hf=hf, notifier=dry_run_notifier, ctx=ctx)
 
         cid = "immobiliare:s3-indb"
         assert await repo.exists(cid), (
@@ -469,9 +463,7 @@ class TestProviderFetchFailure:
         dry_run_notifier: Notifier,
     ) -> None:
         ctx = RunContext(seed=False, dry_run=True)
-        broken = _FakeProvider(
-            ListingSource.IMMOBILIARE, [], raise_on_fetch=True
-        )
+        broken = _FakeProvider(ListingSource.IMMOBILIARE, [], raise_on_fetch=True)
         healthy_listing = _make_listing(
             listing_id="s6-healthy",
             source=ListingSource.CASA,
@@ -491,9 +483,7 @@ class TestProviderFetchFailure:
         assert ListingSource.CASA not in stats.failed_providers
 
         # The healthy provider's listing must still be processed.
-        casa_ps = next(
-            ps for ps in stats.provider_stats if ps.source == ListingSource.CASA
-        )
+        casa_ps = next(ps for ps in stats.provider_stats if ps.source == ListingSource.CASA)
         assert casa_ps.new == 1
         assert casa_ps.alerted == 1
 
@@ -505,9 +495,7 @@ class TestProviderFetchFailure:
     ) -> None:
         """run_cycle must not propagate the provider's exception to the caller."""
         ctx = RunContext(seed=False, dry_run=True)
-        broken = _FakeProvider(
-            ListingSource.IMMOBILIARE, [], raise_on_fetch=True
-        )
+        broken = _FakeProvider(ListingSource.IMMOBILIARE, [], raise_on_fetch=True)
 
         # This should not raise.
         stats = await run_cycle(
@@ -560,9 +548,7 @@ class TestSeedMode:
         listing = _make_listing(listing_id="s7-db", price=_PRICE_WITHIN)
         provider = _FakeProvider(ListingSource.IMMOBILIARE, [listing])
 
-        await run_cycle(
-            providers=[provider], repo=repo, hf=hf, notifier=seed_notifier, ctx=ctx
-        )
+        await run_cycle(providers=[provider], repo=repo, hf=hf, notifier=seed_notifier, ctx=ctx)
 
         assert await repo.exists("immobiliare:s7-db")
 

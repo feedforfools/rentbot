@@ -37,8 +37,7 @@ def main() -> None:
         "--seed",
         action="store_true",
         help=(
-            "Seed mode: populate the DB with current listings "
-            "without sending any Telegram alerts."
+            "Seed mode: populate the DB with current listings without sending any Telegram alerts."
         ),
     )
     parser.add_argument(

@@ -123,9 +123,7 @@ async def open_db(path: Path | None = None) -> aiosqlite.Connection:
     await _configure_pragmas(conn)
     await create_schema(conn)
 
-    logger.info(
-        "SQLite database ready at %s (WAL mode enabled, schema verified)", db_path
-    )
+    logger.info("SQLite database ready at %s (WAL mode enabled, schema verified)", db_path)
     return conn
 
 

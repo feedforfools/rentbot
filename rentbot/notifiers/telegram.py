@@ -111,9 +111,7 @@ def _telegram_wait(retry_state: RetryCallState) -> float:
     if retry_state.outcome is not None:
         exc = retry_state.outcome.exception()
         if isinstance(exc, TelegramRateLimitError) and exc.retry_after > 0:
-            logger.debug(
-                "Honouring Telegram Retry-After of %.1f s", exc.retry_after
-            )
+            logger.debug("Honouring Telegram Retry-After of %.1f s", exc.retry_after)
             return exc.retry_after
 
     # Exponential back-off: 1, 2, 4, 8 … s + uniform jitter.
@@ -344,9 +342,7 @@ class TelegramClient:
         # ----------------------------------------------------------
         if response.status_code == 429:
             retry_after = _parse_retry_after(response)
-            logger.warning(
-                "Telegram rate limit (HTTP 429) — retry_after=%.1f s", retry_after
-            )
+            logger.warning("Telegram rate limit (HTTP 429) — retry_after=%.1f s", retry_after)
             raise TelegramRateLimitError(retry_after=retry_after)
 
         # ----------------------------------------------------------

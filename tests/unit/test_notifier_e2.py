@@ -15,11 +15,10 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -32,7 +31,7 @@ from rentbot.notifiers.formatter import (
     escape_url,
     format_listing,
 )
-from rentbot.notifiers.notifier import Notifier, _DEFAULT_MIN_INTERVAL
+from rentbot.notifiers.notifier import _DEFAULT_MIN_INTERVAL, Notifier
 from rentbot.notifiers.telegram import TelegramClient
 
 logger = logging.getLogger(__name__)
@@ -57,7 +56,7 @@ def _make_listing(
     url: str = "https://www.immobiliare.it/annunci/99999/",
     image_url: str | None = None,
     description: str = "Luminoso appartamento ristrutturato.",
-    listing_date: datetime | None = datetime(2026, 2, 28, 10, 0, 0, tzinfo=timezone.utc),
+    listing_date: datetime | None = datetime(2026, 2, 28, 10, 0, 0, tzinfo=UTC),
 ) -> Listing:
     """Return a valid :class:`Listing` with sensible defaults for E2 tests."""
     return Listing(
@@ -335,7 +334,7 @@ class TestNotifierConstructor:
         assert notifier._min_interval_s == 0.0  # overridden in _make_notifier helper
 
     def test_constant_default_value(self) -> None:
-        assert _DEFAULT_MIN_INTERVAL == pytest.approx(0.05)
+        assert pytest.approx(0.05) == _DEFAULT_MIN_INTERVAL
 
     def test_negative_min_interval_raises(self) -> None:
         client = MagicMock(spec=TelegramClient)
@@ -395,9 +394,7 @@ class TestNotifierSendAlert:
         await notifier.send_alert(_make_listing())
         notifier._client.send_message.assert_called_once()  # type: ignore[attr-defined]
 
-    async def test_live_success_logs_sent(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_live_success_logs_sent(self, caplog: pytest.LogCaptureFixture) -> None:
         notifier = _make_notifier()
         with caplog.at_level(logging.INFO, logger="rentbot.notifiers.notifier"):
             await notifier.send_alert(_make_listing())
@@ -408,9 +405,11 @@ class TestNotifierSendAlert:
     ) -> None:
         err = TelegramError("Bad request", status_code=400)
         notifier = _make_notifier(send_message_side_effect=err)
-        with caplog.at_level(logging.ERROR, logger="rentbot.notifiers.notifier"):
-            with pytest.raises(TelegramError):
-                await notifier.send_alert(_make_listing())
+        with (
+            caplog.at_level(logging.ERROR, logger="rentbot.notifiers.notifier"),
+            pytest.raises(TelegramError),
+        ):
+            await notifier.send_alert(_make_listing())
         assert any(
             r.levelno == logging.ERROR and "Failed to send alert" in r.message
             for r in caplog.records
@@ -420,12 +419,12 @@ class TestNotifierSendAlert:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         notifier = _make_notifier(send_message_side_effect=RuntimeError("boom"))
-        with caplog.at_level(logging.CRITICAL, logger="rentbot.notifiers.notifier"):
-            with pytest.raises(RuntimeError, match="boom"):
-                await notifier.send_alert(_make_listing())
-        assert any(
-            r.levelno == logging.CRITICAL for r in caplog.records
-        )
+        with (
+            caplog.at_level(logging.CRITICAL, logger="rentbot.notifiers.notifier"),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await notifier.send_alert(_make_listing())
+        assert any(r.levelno == logging.CRITICAL for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

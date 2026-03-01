@@ -95,6 +95,7 @@ def _write_heartbeat(path: str = HEARTBEAT_PATH) -> None:
     except OSError:
         logger.warning("Failed to write heartbeat file '%s'.", path, exc_info=True)
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -177,9 +178,7 @@ async def _api_loop(ctx: RunContext, settings: Settings) -> NoReturn:
                 circuit_breaker=circuit_breaker,
             )
         except Exception:
-            logger.exception(
-                "Unhandled exception in API cycle — will retry after interval."
-            )
+            logger.exception("Unhandled exception in API cycle — will retry after interval.")
 
         # Write heartbeat after every iteration (success or failure) so the
         # Docker health check can confirm the process is alive and looping.
@@ -301,16 +300,13 @@ async def run_continuous(
         if not _shutdown_signal:
             _shutdown_signal.append(signame)
             logger.info(
-                "Received %s — graceful shutdown requested; "
-                "cancelling active tasks.",
+                "Received %s — graceful shutdown requested; cancelling active tasks.",
                 signame,
             )
         api_task.cancel()
         browser_task.cancel()
 
-    loop.add_signal_handler(
-        signal.SIGTERM, lambda: _request_graceful_shutdown("SIGTERM")
-    )
+    loop.add_signal_handler(signal.SIGTERM, lambda: _request_graceful_shutdown("SIGTERM"))
 
     try:
         # Both loops are infinite; gather propagates the first exception
@@ -334,3 +330,7 @@ async def run_continuous(
         # with any subsequent asyncio.run() call or test teardown.
         with contextlib.suppress(Exception):
             loop.remove_signal_handler(signal.SIGTERM)
+
+    # asyncio.gather should never return normally from infinite loops.
+    # The except block always re-raises, making this unreachable.
+    raise RuntimeError("run_continuous exited unexpectedly — this is a bug")

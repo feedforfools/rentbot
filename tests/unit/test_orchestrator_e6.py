@@ -21,7 +21,7 @@ import asyncio
 import logging
 import signal
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -30,7 +30,6 @@ from rentbot.core.settings import Settings
 from rentbot.orchestrator.circuit_breaker import (
     CircuitBreakerRegistry,
     CircuitState,
-    ProviderCircuitState,
 )
 from rentbot.orchestrator.pipeline import CycleStats, ProviderCycleStats, run_provider
 from rentbot.orchestrator.scheduler import (
@@ -42,7 +41,6 @@ from rentbot.orchestrator.scheduler import (
     next_browser_interval,
     run_continuous,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -132,9 +130,7 @@ class TestApiLoop:
     """Tests for the internal _api_loop coroutine."""
 
     @pytest.mark.asyncio
-    async def test_api_loop_calls_run_once(
-        self, ctx: RunContext, settings: MagicMock
-    ) -> None:
+    async def test_api_loop_calls_run_once(self, ctx: RunContext, settings: MagicMock) -> None:
         """run_once should be called on the first iteration of the loop."""
         call_count = 0
 
@@ -152,9 +148,9 @@ class TestApiLoop:
                 side_effect=fake_run_once,
             ),
             patch("asyncio.sleep", side_effect=fake_sleep),
+            pytest.raises(asyncio.CancelledError),
         ):
-            with pytest.raises(asyncio.CancelledError):
-                await _api_loop(ctx=ctx, settings=settings)
+            await _api_loop(ctx=ctx, settings=settings)
 
         assert call_count == 1
 
@@ -178,9 +174,9 @@ class TestApiLoop:
                 side_effect=fake_run_once,
             ),
             patch("asyncio.sleep", side_effect=fake_sleep),
+            pytest.raises(asyncio.CancelledError),
         ):
-            with pytest.raises(asyncio.CancelledError):
-                await _api_loop(ctx=ctx, settings=settings)
+            await _api_loop(ctx=ctx, settings=settings)
 
         assert len(sleep_args) == 1
         assert settings.poll_interval_api_min <= sleep_args[0] <= settings.poll_interval_api_max
@@ -215,9 +211,9 @@ class TestApiLoop:
                 side_effect=flaky_run_once,
             ),
             patch("asyncio.sleep", side_effect=fake_sleep),
+            pytest.raises(asyncio.CancelledError),
         ):
-            with pytest.raises(asyncio.CancelledError):
-                await _api_loop(ctx=ctx, settings=settings)
+            await _api_loop(ctx=ctx, settings=settings)
 
         # Loop ran twice despite the first call raising
         assert call_count == 2
@@ -246,9 +242,9 @@ class TestApiLoop:
                 side_effect=fake_run_once,
             ),
             patch("asyncio.sleep", side_effect=fake_sleep),
+            pytest.raises(asyncio.CancelledError),
         ):
-            with pytest.raises(asyncio.CancelledError):
-                await _api_loop(ctx=ctx, settings=settings)
+            await _api_loop(ctx=ctx, settings=settings)
 
         assert call_count == 3
 
@@ -345,9 +341,9 @@ class TestHeartbeat:
                 "rentbot.orchestrator.scheduler._write_heartbeat",
                 side_effect=fake_write_heartbeat,
             ),
+            pytest.raises(asyncio.CancelledError),
         ):
-            with pytest.raises(asyncio.CancelledError):
-                await _api_loop(ctx=ctx, settings=settings)
+            await _api_loop(ctx=ctx, settings=settings)
 
         assert len(heartbeat_calls) == 1, "_write_heartbeat not called after successful cycle"
 
@@ -374,9 +370,9 @@ class TestHeartbeat:
                 "rentbot.orchestrator.scheduler._write_heartbeat",
                 side_effect=fake_write_heartbeat,
             ),
+            pytest.raises(asyncio.CancelledError),
         ):
-            with pytest.raises(asyncio.CancelledError):
-                await _api_loop(ctx=ctx, settings=settings)
+            await _api_loop(ctx=ctx, settings=settings)
 
         assert len(heartbeat_calls) == 1, "_write_heartbeat not called after failing cycle"
 
@@ -390,9 +386,7 @@ class TestRunContinuous:
     """Tests for the public run_continuous entry-point."""
 
     @pytest.mark.asyncio
-    async def test_run_continuous_runs_api_loop(
-        self, ctx: RunContext, settings: MagicMock
-    ) -> None:
+    async def test_run_continuous_runs_api_loop(self, ctx: RunContext, settings: MagicMock) -> None:
         """run_continuous should invoke the API loop (run_once is eventually called)."""
         run_once_called = False
 
@@ -414,16 +408,14 @@ class TestRunContinuous:
                 side_effect=fake_run_once,
             ),
             patch("asyncio.sleep", side_effect=fake_sleep),
+            pytest.raises((asyncio.CancelledError, BaseException)),
         ):
-            with pytest.raises((asyncio.CancelledError, BaseException)):
-                await run_continuous(ctx=ctx, settings=settings)
+            await run_continuous(ctx=ctx, settings=settings)
 
         assert run_once_called, "run_once was never called by the continuous loop"
 
     @pytest.mark.asyncio
-    async def test_run_continuous_loads_settings_if_none(
-        self, ctx: RunContext
-    ) -> None:
+    async def test_run_continuous_loads_settings_if_none(self, ctx: RunContext) -> None:
         """When settings=None, run_continuous should load Settings from env."""
         loaded: list[bool] = []
 
@@ -443,9 +435,9 @@ class TestRunContinuous:
                 side_effect=fake_run_once,
             ),
             patch("asyncio.sleep", side_effect=fake_sleep),
+            pytest.raises((asyncio.CancelledError, BaseException)),
         ):
-            with pytest.raises((asyncio.CancelledError, BaseException)):
-                await run_continuous(ctx=ctx, settings=None)
+            await run_continuous(ctx=ctx, settings=None)
 
         # run_once must have received a Settings instance (not None)
         assert any(loaded), "run_once was never called with loaded settings"
@@ -459,16 +451,18 @@ class TestRunContinuous:
         async def fast_cancel(**kwargs: object) -> None:
             raise asyncio.CancelledError
 
-        with patch(
-            "rentbot.orchestrator.scheduler.run_once",
-            side_effect=fast_cancel,
+        with (
+            patch(
+                "rentbot.orchestrator.scheduler.run_once",
+                side_effect=fast_cancel,
+            ),
+            pytest.raises((asyncio.CancelledError, BaseException)),
         ):
-            with pytest.raises((asyncio.CancelledError, BaseException)):
-                # Should not hang; should terminate promptly
-                await asyncio.wait_for(
-                    run_continuous(ctx=ctx, settings=settings),
-                    timeout=5.0,
-                )
+            # Should not hang; should terminate promptly
+            await asyncio.wait_for(
+                run_continuous(ctx=ctx, settings=settings),
+                timeout=5.0,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -501,13 +495,11 @@ class TestGracefulShutdown:
                 "rentbot.orchestrator.scheduler.run_once",
                 side_effect=fast_cancel,
             ),
+            pytest.raises((asyncio.CancelledError, BaseException)),
         ):
-            with pytest.raises((asyncio.CancelledError, BaseException)):
-                await run_continuous(ctx=ctx, settings=settings)
+            await run_continuous(ctx=ctx, settings=settings)
 
-        assert signal.SIGTERM in registered, (
-            "SIGTERM handler was not registered on the event loop"
-        )
+        assert signal.SIGTERM in registered, "SIGTERM handler was not registered on the event loop"
 
     @pytest.mark.asyncio
     async def test_sigterm_handler_removed_in_finally(
@@ -531,9 +523,9 @@ class TestGracefulShutdown:
                 "rentbot.orchestrator.scheduler.run_once",
                 side_effect=fast_cancel,
             ),
+            pytest.raises((asyncio.CancelledError, BaseException)),
         ):
-            with pytest.raises((asyncio.CancelledError, BaseException)):
-                await run_continuous(ctx=ctx, settings=settings)
+            await run_continuous(ctx=ctx, settings=settings)
 
         assert signal.SIGTERM in removed, (
             "SIGTERM handler was not removed from the event loop in finally block"
@@ -564,16 +556,12 @@ class TestGracefulShutdown:
                 "rentbot.orchestrator.scheduler.run_once",
                 side_effect=invoke_sigterm_then_cancel,
             ),
+            caplog.at_level(logging.INFO, logger="rentbot.orchestrator.scheduler"),
+            pytest.raises((asyncio.CancelledError, BaseException)),
         ):
-            with caplog.at_level(
-                logging.INFO, logger="rentbot.orchestrator.scheduler"
-            ):
-                with pytest.raises((asyncio.CancelledError, BaseException)):
-                    await run_continuous(ctx=ctx, settings=settings)
+            await run_continuous(ctx=ctx, settings=settings)
 
-        sigterm_log = [
-            r.message for r in caplog.records if "SIGTERM" in r.message
-        ]
+        sigterm_log = [r.message for r in caplog.records if "SIGTERM" in r.message]
         assert sigterm_log, "No log message mentioning SIGTERM was emitted"
 
     @pytest.mark.asyncio
@@ -601,17 +589,13 @@ class TestGracefulShutdown:
                 "rentbot.orchestrator.scheduler.run_once",
                 side_effect=invoke_sigterm_twice_then_cancel,
             ),
+            caplog.at_level(logging.INFO, logger="rentbot.orchestrator.scheduler"),
+            pytest.raises((asyncio.CancelledError, BaseException)),
         ):
-            with caplog.at_level(
-                logging.INFO, logger="rentbot.orchestrator.scheduler"
-            ):
-                with pytest.raises((asyncio.CancelledError, BaseException)):
-                    await run_continuous(ctx=ctx, settings=settings)
+            await run_continuous(ctx=ctx, settings=settings)
 
         shutdown_log_count = sum(
-            1
-            for r in caplog.records
-            if "graceful shutdown requested" in r.message
+            1 for r in caplog.records if "graceful shutdown requested" in r.message
         )
         assert shutdown_log_count == 1, (
             f"Expected exactly 1 'graceful shutdown requested' log, got {shutdown_log_count}"
@@ -641,17 +625,13 @@ class TestGracefulShutdown:
                 "rentbot.orchestrator.scheduler.run_once",
                 side_effect=invoke_sigterm_then_cancel,
             ),
+            caplog.at_level(logging.INFO, logger="rentbot.orchestrator.scheduler"),
+            pytest.raises((asyncio.CancelledError, BaseException)),
         ):
-            with caplog.at_level(
-                logging.INFO, logger="rentbot.orchestrator.scheduler"
-            ):
-                with pytest.raises((asyncio.CancelledError, BaseException)):
-                    await run_continuous(ctx=ctx, settings=settings)
+            await run_continuous(ctx=ctx, settings=settings)
 
         complete_msgs = [
-            r.message
-            for r in caplog.records
-            if "Graceful shutdown complete" in r.message
+            r.message for r in caplog.records if "Graceful shutdown complete" in r.message
         ]
         assert complete_msgs, "'Graceful shutdown complete' log line was not emitted"
 
@@ -826,16 +806,16 @@ class TestCircuitBreakerBackoff:
             backoff_multiplier=2.0,
             clock=clock,
         )
-        cb.record_failure("x")           # trip #1
+        cb.record_failure("x")  # trip #1
         clock.advance(61.0)
-        cb.allow_request("x")            # HALF_OPEN
-        cb.record_failure("x")           # trip #2
+        cb.allow_request("x")  # HALF_OPEN
+        cb.record_failure("x")  # trip #2
         clock.advance(121.0)
-        cb.allow_request("x")            # HALF_OPEN again
-        cb.record_success("x")           # probe succeeds → CLOSED, trip_count=0
+        cb.allow_request("x")  # HALF_OPEN again
+        cb.record_success("x")  # probe succeeds → CLOSED, trip_count=0
         assert cb.get_state("x").trip_count == 0
         # New failure starts fresh.
-        cb.record_failure("x")           # trip #1 again
+        cb.record_failure("x")  # trip #1 again
         assert cb.get_state("x").trip_count == 1
         # Should use base timeout (60 s), not escalated.
         clock.advance(59.0)
@@ -882,8 +862,8 @@ class TestCircuitBreakerEdgeCases:
         )
         cb.record_failure("x")
         clock.advance(11.0)
-        assert cb.allow_request("x") is True   # → HALF_OPEN
-        assert cb.allow_request("x") is True   # still HALF_OPEN, still allows
+        assert cb.allow_request("x") is True  # → HALF_OPEN
+        assert cb.allow_request("x") is True  # still HALF_OPEN, still allows
         assert cb.get_state("x").state == CircuitState.HALF_OPEN
 
     def test_threshold_one_trips_immediately(self) -> None:
@@ -1038,18 +1018,30 @@ class TestCycleStatsReport:
         assert "casa" in report
         assert "failed_providers" in report
         # Provider line (indented) must include [FAILED] marker
-        provider_line = [l for l in report.splitlines() if l.startswith("  ") and "casa" in l]
+        provider_line = [
+            line for line in report.splitlines() if line.startswith("  ") and "casa" in line
+        ]
         assert len(provider_line) == 1
         assert "[FAILED]" in provider_line[0]
 
     def test_format_report_multiple_providers_aggregate_totals(self) -> None:
         ps1 = ProviderCycleStats(
-            source="immobiliare", fetched=8, new=3, duplicate=5,
-            passed_filter=2, alerted=2, errors=0,
+            source="immobiliare",
+            fetched=8,
+            new=3,
+            duplicate=5,
+            passed_filter=2,
+            alerted=2,
+            errors=0,
         )
         ps2 = ProviderCycleStats(
-            source="casa", fetched=4, new=1, duplicate=3,
-            passed_filter=1, alerted=1, errors=1,
+            source="casa",
+            fetched=4,
+            new=1,
+            duplicate=3,
+            passed_filter=1,
+            alerted=1,
+            errors=1,
         )
         stats = CycleStats(provider_stats=[ps1, ps2], duration_s=3.14)
         report = stats.format_cycle_report()
@@ -1067,7 +1059,7 @@ class TestCycleStatsReport:
         assert "3.1s" in lines[0]  # duration rounded to 1 decimal
 
         # Both provider names appear in their respective lines
-        provider_sources = [l.split(":")[0].strip() for l in lines[1:]]
+        provider_sources = [line.split(":")[0].strip() for line in lines[1:]]
         assert "immobiliare" in provider_sources
         assert "casa" in provider_sources
 
@@ -1147,9 +1139,7 @@ class TestCycleStatsReport:
             await run_once(ctx=ctx, settings=settings)
 
         # The INFO log must contain the key phrase from format_cycle_report.
-        info_messages = " ".join(
-            r.message for r in caplog.records if r.levelno == logging.INFO
-        )
+        info_messages = " ".join(r.message for r in caplog.records if r.levelno == logging.INFO)
         assert "cycle complete in" in info_messages
 
 

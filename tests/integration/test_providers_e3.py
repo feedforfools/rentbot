@@ -126,9 +126,7 @@ class TestImmobiliareProviderLive:
     """
 
     @_skip_if_no_immobiliare
-    async def test_fetch_completes_without_error(
-        self, live_settings: Settings
-    ) -> None:
+    async def test_fetch_completes_without_error(self, live_settings: Settings) -> None:
         """Provider calls the live API and returns a list without raising.
 
         This is the primary liveness check — it validates that:
@@ -175,9 +173,7 @@ class TestImmobiliareProviderLive:
             assert isinstance(listing, Listing), (
                 f"Expected Listing, got {type(listing)!r}: {listing!r}"
             )
-            assert listing.source == ListingSource.IMMOBILIARE, (
-                f"Wrong source: {listing.source!r}"
-            )
+            assert listing.source == ListingSource.IMMOBILIARE, f"Wrong source: {listing.source!r}"
             assert listing.id, "Listing.id must not be empty."
             assert listing.url.startswith("https://"), (
                 f"Listing URL should be an absolute HTTPS URL, got: {listing.url!r}"
@@ -190,9 +186,7 @@ class TestImmobiliareProviderLive:
         )
 
     @_skip_if_no_immobiliare
-    async def test_provider_ids_are_raw_not_canonicalized(
-        self, live_settings: Settings
-    ) -> None:
+    async def test_provider_ids_are_raw_not_canonicalized(self, live_settings: Settings) -> None:
         """``Listing.id`` must be the raw provider-local ID, not a ``"immobiliare:…"`` key.
 
         The storage layer is the sole place where canonical
@@ -232,9 +226,7 @@ class TestCasaProviderLive:
     """
 
     @_skip_if_no_casa
-    async def test_fetch_completes_without_error(
-        self, live_settings: Settings
-    ) -> None:
+    async def test_fetch_completes_without_error(self, live_settings: Settings) -> None:
         """Provider fetches the search page and parses ``__INITIAL_STATE__`` without raising.
 
         This is the primary liveness check — it validates that:
@@ -279,9 +271,7 @@ class TestCasaProviderLive:
             assert isinstance(listing, Listing), (
                 f"Expected Listing, got {type(listing)!r}: {listing!r}"
             )
-            assert listing.source == ListingSource.CASA, (
-                f"Wrong source: {listing.source!r}"
-            )
+            assert listing.source == ListingSource.CASA, f"Wrong source: {listing.source!r}"
             assert listing.id, "Listing.id must not be empty."
             assert listing.url.startswith("https://"), (
                 f"Listing URL should be an absolute HTTPS URL, got: {listing.url!r}"
@@ -294,9 +284,7 @@ class TestCasaProviderLive:
         )
 
     @_skip_if_no_casa
-    async def test_provider_ids_are_raw_not_canonicalized(
-        self, live_settings: Settings
-    ) -> None:
+    async def test_provider_ids_are_raw_not_canonicalized(self, live_settings: Settings) -> None:
         """``Listing.id`` must be the raw provider-local ID, not a ``"casa:…"`` key.
 
         Mirrors the same regression guard as the Immobiliare variant — ensures

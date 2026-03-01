@@ -13,7 +13,7 @@ Covers:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -21,13 +21,13 @@ import pytest
 from pydantic import ValidationError
 
 from rentbot.core.criteria import FilterCriteria
+from rentbot.core.exceptions import ListingAlreadyExistsError
 from rentbot.core.ids import canonical_id, canonical_id_from_listing
 from rentbot.core.models import Listing, ListingSource
 from rentbot.core.run_context import RunContext
 from rentbot.core.settings import Settings
 from rentbot.storage.database import create_schema, open_db
 from rentbot.storage.repository import ListingRepository
-from rentbot.core.exceptions import ListingAlreadyExistsError
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Factories / helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_listing(
     *,
@@ -111,7 +112,7 @@ class TestListingValidation:
 
     def test_full_listing_round_trips(self) -> None:
         """All fields survive construction unchanged."""
-        dt = datetime(2026, 2, 28, 12, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2026, 2, 28, 12, 0, 0, tzinfo=UTC)
         listing = _make_listing(listing_date=dt, rooms=3, area_sqm=80)
         assert listing.rooms == 3
         assert listing.area_sqm == 80
@@ -121,7 +122,7 @@ class TestListingValidation:
     def test_listing_is_frozen(self) -> None:
         """Listing instances are immutable (frozen model)."""
         listing = _make_listing()
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             listing.price = 999  # type: ignore[misc]
 
     def test_blank_id_rejected(self) -> None:
@@ -349,7 +350,7 @@ class TestRunContext:
 
     def test_run_context_is_immutable(self) -> None:
         ctx = RunContext(seed=False)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             ctx.seed = True  # type: ignore[misc]
 
     def test_str_representation_contains_mode(self) -> None:
@@ -461,9 +462,7 @@ class TestListingRepository:
             listing = _make_listing(id="20")
             cid = await repo.insert(listing)
             await repo.mark_notified(cid)
-            cursor = await conn.execute(
-                "SELECT notified FROM seen_listings WHERE id = ?", (cid,)
-            )
+            cursor = await conn.execute("SELECT notified FROM seen_listings WHERE id = ?", (cid,))
             row = await cursor.fetchone()
             assert row is not None
             assert row["notified"] == 1
@@ -476,9 +475,7 @@ class TestListingRepository:
             repo = ListingRepository(conn)
             listing = _make_listing(id="21")
             cid = await repo.insert(listing)
-            cursor = await conn.execute(
-                "SELECT notified FROM seen_listings WHERE id = ?", (cid,)
-            )
+            cursor = await conn.execute("SELECT notified FROM seen_listings WHERE id = ?", (cid,))
             row = await cursor.fetchone()
             assert row is not None
             assert row["notified"] == 0
@@ -523,9 +520,7 @@ class TestListingRepository:
             repo = ListingRepository(conn)
             listing = _make_listing(id="40", title="JSON roundtrip test")
             cid = await repo.insert(listing)
-            cursor = await conn.execute(
-                "SELECT raw_json FROM seen_listings WHERE id = ?", (cid,)
-            )
+            cursor = await conn.execute("SELECT raw_json FROM seen_listings WHERE id = ?", (cid,))
             row = await cursor.fetchone()
             assert row is not None
             assert "JSON roundtrip test" in row["raw_json"]
@@ -553,8 +548,7 @@ class TestListingRepository:
         try:
             repo = ListingRepository(conn)
             l_immo = _make_listing(id="999", source=ListingSource.IMMOBILIARE)
-            l_casa = _make_listing(id="999", source=ListingSource.CASA,
-                                   url="https://casa.it/999/")
+            l_casa = _make_listing(id="999", source=ListingSource.CASA, url="https://casa.it/999/")
             cid_immo = await repo.insert(l_immo)
             cid_casa = await repo.insert(l_casa)
             assert cid_immo != cid_casa
@@ -616,9 +610,7 @@ class TestSettings:
         s = Settings()
         assert s.telegram_configured is False
 
-    def test_llm_configured_openai(
-        self, monkeypatch: pytest.MonkeyPatch, clean_env: None
-    ) -> None:
+    def test_llm_configured_openai(self, monkeypatch: pytest.MonkeyPatch, clean_env: None) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         s = Settings()
         assert s.llm_configured is True
@@ -669,7 +661,7 @@ class TestSettings:
         s = Settings()
         # defaults: min_price=0, min_area=0, max_rooms=0
         criteria = s.to_filter_criteria()
-        assert criteria.price_min is None   # 0 → None
+        assert criteria.price_min is None  # 0 → None
         assert criteria.area_sqm_min is None
         assert criteria.rooms_max is None
 

@@ -168,8 +168,18 @@ def _fmt_date(dt: datetime) -> str:
     """Format publication date as a short localised string."""
     # Day Month Year — no time (noisy in a chat notification).
     month_names = [
-        "Gen", "Feb", "Mar", "Apr", "Mag", "Giu",
-        "Lug", "Ago", "Set", "Ott", "Nov", "Dic",
+        "Gen",
+        "Feb",
+        "Mar",
+        "Apr",
+        "Mag",
+        "Giu",
+        "Lug",
+        "Ago",
+        "Set",
+        "Ott",
+        "Nov",
+        "Dic",
     ]
     return escape_mdv2(f"{dt.day} {month_names[dt.month - 1]} {dt.year}")
 

@@ -72,7 +72,7 @@ import logging
 from dataclasses import dataclass, field
 
 from rentbot.core.exceptions import ListingAlreadyExistsError
-from rentbot.core.models import Listing, ListingSource
+from rentbot.core.models import Listing
 from rentbot.core.run_context import RunContext
 from rentbot.filters.heuristic import HeuristicFilter
 from rentbot.notifiers.notifier import Notifier
@@ -194,9 +194,7 @@ class CycleStats:
         Returns:
             Multi-line string suitable for a single ``logger.info()`` call.
         """
-        failed_part = (
-            f" failed_providers={self.failed_providers}" if self.failed_providers else ""
-        )
+        failed_part = f" failed_providers={self.failed_providers}" if self.failed_providers else ""
         header = (
             f"cycle complete in {self.duration_s:.1f}s: "
             f"fetched={self.total_fetched} new={self.total_new} "
@@ -466,13 +464,12 @@ async def run_cycle(
         return CycleStats()
 
     tasks = [
-        run_provider(p, repo, hf, notifier, ctx, circuit_breaker=circuit_breaker)
-        for p in providers
+        run_provider(p, repo, hf, notifier, ctx, circuit_breaker=circuit_breaker) for p in providers
     ]
     raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
     provider_stats: list[ProviderCycleStats] = []
-    for provider, result in zip(providers, raw_results):
+    for provider, result in zip(providers, raw_results, strict=True):
         source_label = str(provider.source)
         if isinstance(result, BaseException):
             # run_provider itself raised unexpectedly (not the fetch call).
@@ -482,9 +479,7 @@ async def run_cycle(
                 result,
                 exc_info=result,
             )
-            provider_stats.append(
-                ProviderCycleStats(source=source_label, provider_failed=True)
-            )
+            provider_stats.append(ProviderCycleStats(source=source_label, provider_failed=True))
         else:
             provider_stats.append(result)
 

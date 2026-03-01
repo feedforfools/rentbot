@@ -107,20 +107,11 @@ _USER_AGENTS: Final[list[str]] = [
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     # Firefox 125 on Windows
-    (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) "
-        "Gecko/20100101 Firefox/125.0"
-    ),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"),
     # Firefox 125 on macOS
-    (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) "
-        "Gecko/20100101 Firefox/125.0"
-    ),
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 14.4; rv:125.0) Gecko/20100101 Firefox/125.0"),
     # Firefox 125 on Linux
-    (
-        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:125.0) "
-        "Gecko/20100101 Firefox/125.0"
-    ),
+    ("Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0"),
     # Safari 17 on macOS
     (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) "
@@ -274,7 +265,7 @@ class ProviderHttpClient:
     # Context manager
     # ------------------------------------------------------------------
 
-    async def __aenter__(self) -> "ProviderHttpClient":
+    async def __aenter__(self) -> ProviderHttpClient:
         """Open the connection pool and return ``self``."""
         await self._ensure_client()
         return self
@@ -599,9 +590,7 @@ def _parse_retry_after(response: httpx.Response, source_label: str) -> float:
         try:
             return max(float(header), 1.0)
         except ValueError:
-            logger.debug(
-                "Could not parse Retry-After header %r for %s.", header, source_label
-            )
+            logger.debug("Could not parse Retry-After header %r for %s.", header, source_label)
 
     # Some APIs embed retry info in a JSON body.
     try:

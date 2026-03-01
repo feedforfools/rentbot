@@ -56,7 +56,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
@@ -181,7 +181,7 @@ class CircuitBreakerRegistry:
         circuit is OPEN, so the first trip uses the base timeout.
         """
         exponent = max(pcs.trip_count - 1, 0)
-        raw = self._base_recovery_timeout * (self._backoff_multiplier ** exponent)
+        raw = self._base_recovery_timeout * (self._backoff_multiplier**exponent)
         return min(raw, self._max_recovery_timeout)
 
     def _trip(self, source: str, pcs: ProviderCircuitState) -> None:

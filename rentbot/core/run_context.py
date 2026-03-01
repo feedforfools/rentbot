@@ -133,7 +133,4 @@ class RunContext:
         return "live"
 
     def __str__(self) -> str:
-        return (
-            f"RunContext(mode={self.mode_label}, "
-            f"should_notify={self.should_notify})"
-        )
+        return f"RunContext(mode={self.mode_label}, should_notify={self.should_notify})"

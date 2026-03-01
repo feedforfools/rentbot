@@ -265,10 +265,15 @@ These rules are non-negotiable and apply to every file in the codebase.
 
 ### Code Style
 
-- **Formatter & linter:** `ruff` (configured in `pyproject.toml`). Run before every commit:
+- **Formatter & linter:** `ruff` (configured in `pyproject.toml`). Use the `Makefile` targets — they delegate to the same config:
   ```bash
-  ruff check --fix .
-  ruff format .
+  make fix        # auto-fix violations and reformat in place
+  make check      # lint + format-check + typecheck (CI gate, no writes)
+  ```
+  Or call directly:
+  ```bash
+  ruff check --fix rentbot/ tests/
+  ruff format rentbot/ tests/
   ```
 - **Line length:** 100 characters.
 - **Imports:** isort-style, `ruff` enforces ordering. Standard library → third-party → first-party (`rentbot`).
@@ -316,30 +321,56 @@ Each Python module should follow this top-to-bottom order:
 
 ## Testing
 
-```bash
-# Run all tests
-pytest
+A `Makefile` at the project root exposes the standard developer workflows:
 
-# Run only unit tests
+```bash
+# Run quality gates (lint + format-check + typecheck) — use as a pre-commit check
+make check
+
+# Run unit tests only (fast, no external I/O)
+make test
+
+# Auto-fix lint violations and reformat files in place
+make fix
+
+# Run unit + integration tests (integration tests require .env credentials)
+make test-all
+
+# Run integration tests only
+make test-integration
+
+# Show all available Makefile targets
+make help
+```
+
+Or invoke the tools directly:
+
+```bash
+# Unit tests
 pytest tests/unit/
 
-# Run with verbose output
+# Full suite including integration tests
+pytest -m ""
+
+# Verbose output
 pytest -v
 
-# Run with log output visible
+# With log output visible
 pytest -s
 ```
+
+Integration tests (in `tests/integration/`) make real HTTP calls or require Telegram credentials. They are excluded from the default `pytest` run (`-m 'not integration'` in `pyproject.toml`) and must be opted into explicitly via `make test-integration` or `pytest -m integration`.
 
 ---
 
 ## Project Status
 
-**MVP phase complete.** The API-based pipeline (Immobiliare.it + Casa.it → dedup → heuristic filter → Telegram) is operational and containerised.
+**MVP phase in progress.** The API-based pipeline (Immobiliare.it + Casa.it → dedup → heuristic filter → Telegram) is operational and containerised. Epic 8 (quality gates + observability) is underway.
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| Phase 1 — MVP | Epics 0–3 (foundation, domain, notifications, API providers), Epic 6 (orchestration), Epic 7 (Docker), Epic 8 (integration tests + observability) | 🔄 Epic 8 remaining |
+| Phase 1 — MVP | Epics 0–3 (foundation, domain, notifications, API providers), Epic 6 (orchestration), Epic 7 (Docker), Epic 8 (integration tests + observability) | 🔄 Epic 8 in progress (E8-T1 ✓ E8-T2 ✓, E8-T3–T5 remaining) |
 | Phase 2 — LLM + Browser | Epic 4 (LLM filter), Epic 5 (Facebook + Idealista), E6-T7 (core↔worker contract), Epic 7 Phase 2 additions | 🔜 Planned |
 | Phase 3 — Extensibility | Epic 9 (provider plugin registry) | 🔜 Future |
 
-All 276 unit and integration tests pass. Run `pytest` to verify.
+292 unit tests pass. Run `make check && make test` to verify.

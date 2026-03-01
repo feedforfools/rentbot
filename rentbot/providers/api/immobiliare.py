@@ -61,8 +61,8 @@ _SEARCH_PATH: str = "/api-next/search-list/listings/"
 
 #: Fixed query parameters that never change between requests.
 _FIXED_PARAMS: dict[str, str | int] = {
-    "idContratto": 2,   # 2 = affitto (rent)
-    "idCategoria": 1,   # 1 = residenziale
+    "idContratto": 2,  # 2 = affitto (rent)
+    "idCategoria": 1,  # 1 = residenziale
     "__lang": "it",
     "paramsCount": 5,
     "path": "/search-list/",
@@ -172,9 +172,7 @@ class ImmobiliareProvider(BaseProvider):
             results are found.
         """
         if not self._settings.immobiliare_vrt:
-            logger.warning(
-                "IMMOBILIARE_VRT is not configured — skipping Immobiliare provider."
-            )
+            logger.warning("IMMOBILIARE_VRT is not configured — skipping Immobiliare provider.")
             return []
 
         listings: list[Listing] = []
@@ -295,9 +293,7 @@ class ImmobiliareProvider(BaseProvider):
         # ------------------------------------------------------------------
         photo: dict[str, Any] = props.get("photo") or {}
         urls: dict[str, Any] = photo.get("urls") or {}
-        image_url: str | None = (
-            urls.get("large") or urls.get("medium") or urls.get("small") or None
-        )
+        image_url: str | None = urls.get("large") or urls.get("medium") or urls.get("small") or None
 
         # ------------------------------------------------------------------
         # Description

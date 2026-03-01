@@ -82,8 +82,7 @@ _INITIAL_STATE_RE: re.Pattern[str] = re.compile(
 
 #: HTML Accept header sent with every page request to look like a real browser.
 _HTML_ACCEPT: str = (
-    "text/html,application/xhtml+xml,application/xml;q=0.9,"
-    "image/avif,image/webp,*/*;q=0.8"
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
 )
 
 # ---------------------------------------------------------------------------
@@ -117,7 +116,7 @@ def _extract_initial_state(html: str) -> dict[str, Any]:
         )
     # Wrap the captured group in quotes so json.loads decodes all \" and \uXXXX
     inner_str: str = json.loads('"' + match.group(1) + '"')
-    return json.loads(inner_str)  # type: ignore[return-value]
+    return json.loads(inner_str)  # type: ignore[no-any-return]
 
 
 # _detect_furnished has been consolidated into the shared
@@ -192,9 +191,7 @@ class CasaProvider(BaseProvider):
             or no results are found.
         """
         if not self._settings.casa_search_url:
-            logger.warning(
-                "CASA_SEARCH_URL is not configured — skipping Casa provider."
-            )
+            logger.warning("CASA_SEARCH_URL is not configured — skipping Casa provider.")
             return []
 
         parsed_url = urlparse(self._settings.casa_search_url)
@@ -264,9 +261,7 @@ class CasaProvider(BaseProvider):
                 listings.append(listing)
 
             if page >= total_pages:
-                logger.debug(
-                    "Casa: reached last page (%d/%d), stopping.", page, total_pages
-                )
+                logger.debug("Casa: reached last page (%d/%d), stopping.", page, total_pages)
                 break
 
         logger.info(

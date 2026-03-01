@@ -155,7 +155,7 @@ class HeuristicFilter:
 
         all_results: list[FilterResult] = [self.evaluate(listing) for listing in listings]
         passing: list[Listing] = [
-            listing for listing, result in zip(listings, all_results) if result.passed
+            listing for listing, result in zip(listings, all_results, strict=True) if result.passed
         ]
 
         logger.info(

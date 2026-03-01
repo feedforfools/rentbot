@@ -129,10 +129,7 @@ class FilterCriteria(BaseModel):
     # ------------------------------------------------------------------
     furnished_required: bool | None = Field(
         None,
-        description=(
-            "True = only furnished; False = only unfurnished; "
-            "None = no constraint."
-        ),
+        description=("True = only furnished; False = only unfurnished; None = no constraint."),
     )
 
     # ------------------------------------------------------------------
@@ -162,7 +159,7 @@ class FilterCriteria(BaseModel):
     # ------------------------------------------------------------------
 
     @model_validator(mode="after")
-    def _validate_ranges(self) -> "FilterCriteria":
+    def _validate_ranges(self) -> FilterCriteria:
         """Ensure min ≤ max for all bounded pairs."""
         pairs: list[tuple[str, int | None, str, int | None]] = [
             ("price_min", self.price_min, "price_max", self.price_max),
@@ -171,9 +168,7 @@ class FilterCriteria(BaseModel):
         ]
         for lo_name, lo, hi_name, hi in pairs:
             if lo is not None and hi is not None and lo > hi:
-                raise ValueError(
-                    f"{lo_name} ({lo}) must be ≤ {hi_name} ({hi})"
-                )
+                raise ValueError(f"{lo_name} ({lo}) must be ≤ {hi_name} ({hi})")
         return self
 
     # ------------------------------------------------------------------
@@ -191,9 +186,7 @@ class FilterCriteria(BaseModel):
         """
         if self.price_min is not None and price < self.price_min:
             return False
-        if self.price_max is not None and price > self.price_max:
-            return False
-        return True
+        return self.price_max is None or price <= self.price_max
 
     def matches_rooms(self, rooms: int | None) -> bool:
         """Return True if *rooms* satisfies the configured bounds.
@@ -212,9 +205,7 @@ class FilterCriteria(BaseModel):
             return True  # unknown → err on the side of alerting
         if self.rooms_min is not None and rooms < self.rooms_min:
             return False
-        if self.rooms_max is not None and rooms > self.rooms_max:
-            return False
-        return True
+        return self.rooms_max is None or rooms <= self.rooms_max
 
     def matches_area(self, area_sqm: int | None) -> bool:
         """Return True if *area_sqm* satisfies the configured bounds.
@@ -231,9 +222,7 @@ class FilterCriteria(BaseModel):
             return True
         if self.area_sqm_min is not None and area_sqm < self.area_sqm_min:
             return False
-        if self.area_sqm_max is not None and area_sqm > self.area_sqm_max:
-            return False
-        return True
+        return self.area_sqm_max is None or area_sqm <= self.area_sqm_max
 
     def matches_furnished(self, furnished: bool | None) -> bool:
         """Return True if *furnished* satisfies the furnishing constraint.
@@ -345,13 +334,17 @@ class FilterCriteria(BaseModel):
             return False, f"zone {zone!r} not in allowlist {self.zones_include}"
         if not self.matches_keywords(title, description):
             kw_hit = next(
-                (kw for kw in self.keyword_blocklist if _normalise(kw) in _normalise(f"{title} {description}")),
+                (
+                    kw
+                    for kw in self.keyword_blocklist
+                    if _normalise(kw) in _normalise(f"{title} {description}")
+                ),
                 "unknown",
             )
             return False, f"blocked by keyword {kw_hit!r}"
         return True, ""
 
-    def matches_listing(self, listing: "Listing") -> tuple[bool, str]:  # noqa: F821
+    def matches_listing(self, listing: Listing) -> tuple[bool, str]:  # noqa: F821
         """Evaluate all criteria against a :class:`~rentbot.core.models.Listing`.
 
         Convenience wrapper around :meth:`matches` that unpacks the relevant

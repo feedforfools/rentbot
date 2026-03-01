@@ -18,7 +18,7 @@ import logging
 import os
 import sys
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 __all__ = ["configure_logging", "JsonFormatter"]
@@ -88,9 +88,7 @@ def configure_logging(
     if resolved_fmt == "json":
         handler.setFormatter(JsonFormatter())
     else:
-        handler.setFormatter(
-            logging.Formatter(fmt=_TEXT_FORMAT, datefmt=_DATE_FORMAT)
-        )
+        handler.setFormatter(logging.Formatter(fmt=_TEXT_FORMAT, datefmt=_DATE_FORMAT))
 
     root.setLevel(resolved_level)
     root.addHandler(handler)
@@ -162,8 +160,8 @@ class JsonFormatter(logging.Formatter):
         record.message = record.getMessage()
 
         ts = (
-            datetime.fromtimestamp(record.created, tz=timezone.utc)
-            .strftime("%Y-%m-%dT%H:%M:%S.") + f"{int(record.msecs):03d}Z"
+            datetime.fromtimestamp(record.created, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.")
+            + f"{int(record.msecs):03d}Z"
         )
 
         payload: dict[str, Any] = {
@@ -174,11 +172,7 @@ class JsonFormatter(logging.Formatter):
         }
 
         # Collect any kwargs passed via logging.info(..., extra={...}).
-        extra = {
-            k: v
-            for k, v in record.__dict__.items()
-            if k not in self._RECORD_ATTRS
-        }
+        extra = {k: v for k, v in record.__dict__.items() if k not in self._RECORD_ATTRS}
         payload["extra"] = extra
 
         if record.exc_info:

@@ -15,7 +15,6 @@ from pydantic_settings import SettingsConfigDict
 from rentbot.core import configure_logging
 from rentbot.core.settings import Settings
 
-
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
