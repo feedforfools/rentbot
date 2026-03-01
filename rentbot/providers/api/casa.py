@@ -42,7 +42,7 @@ import json
 import logging
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from rentbot.core.models import Listing, ListingSource
 from rentbot.core.settings import Settings
@@ -197,17 +197,45 @@ class CasaProvider(BaseProvider):
             )
             return []
 
-        search_path = urlparse(self._settings.casa_search_url).path
+        parsed_url = urlparse(self._settings.casa_search_url)
+        search_path = parsed_url.path
+        # Flatten parse_qs lists (each key maps to a single-item list) into
+        # a plain {str: str} dict so httpx can re-encode them cleanly.
+        base_query_params: dict[str, str] = (
+            {k: v[0] for k, v in parse_qs(parsed_url.query, keep_blank_values=True).items()}
+            if parsed_url.query
+            else {}
+        )
+        # Detect the pagination style from the configured URL:
+        # * Query-string URLs (e.g. /srp/map/?geopolygon=…) page via ?page=N.
+        # * Plain path URLs (e.g. /affitto/residenziale/pordenone/) page via /N/.
+        uses_query_params: bool = bool(base_query_params)
+
         listings: list[Listing] = []
         seen_ids: set[str] = set()
         max_pages = self._settings.casa_max_pages
 
         for page in range(1, max_pages + 1):
-            path = _build_page_path(search_path, page)
-            logger.debug("Casa fetch page %d/%d  path=%r", page, max_pages, path)
+            if uses_query_params:
+                path = search_path
+                page_params: dict[str, Any] = {**base_query_params}
+                if page > 1:
+                    page_params["page"] = str(page)
+            else:
+                path = _build_page_path(search_path, page)
+                page_params = {}
+
+            logger.debug(
+                "Casa fetch page %d/%d  path=%r  query_params=%s",
+                page,
+                max_pages,
+                path,
+                "(from base URL)" if uses_query_params else "none",
+            )
 
             response = await self._http.get(
                 path,
+                params=page_params or None,
                 headers={"Accept": _HTML_ACCEPT},
             )
 
