@@ -1,0 +1,67 @@
+# =============================================================================
+# Rentbot — Core Poller Container
+# =============================================================================
+# Slim Python image with no browser binaries.  Runs the API-based pipeline:
+#   Immobiliare + Casa → dedup → heuristic filter → Telegram alerts.
+#
+# Build:
+#   docker build -f docker/Dockerfile.core -t rentbot-core .
+#
+# Run:
+#   docker run --env-file .env -v rentbot-data:/data rentbot-core
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Stage 1 — build dependencies
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Install build-essential only if needed for compiled deps (aiosqlite is pure
+# Python, but keep the layer in case a future dep needs it).  The builder
+# stage is discarded anyway.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md ./
+COPY rentbot/ ./rentbot/
+
+# Install the package (core deps only — no dev/test/browser/llm extras) into
+# a dedicated prefix so we can copy just the site-packages later.
+RUN pip install --no-cache-dir --prefix=/install .
+
+# ---------------------------------------------------------------------------
+# Stage 2 — runtime
+# ---------------------------------------------------------------------------
+FROM python:3.11-slim AS runtime
+
+LABEL maintainer="rentbot"
+LABEL description="Rentbot core poller — API providers, dedup, filter, Telegram alerts"
+
+# Create a non-root user for the application.
+RUN groupadd --system rentbot && \
+    useradd --system --gid rentbot --create-home rentbot
+
+# Copy installed packages from builder.
+COPY --from=builder /install /usr/local
+
+# Create the default data directory (SQLite volume mount point).
+RUN mkdir -p /data && chown rentbot:rentbot /data
+
+# Default DATABASE_PATH inside the container points to the mounted volume.
+ENV DATABASE_PATH=/data/rentbot.db
+
+# Switch to non-root user.
+USER rentbot
+WORKDIR /home/rentbot
+
+# Health-check: verify the Python process is importable (lightweight).
+# A richer HTTP-based health-check can be added in E7-T4.
+HEALTHCHECK --interval=60s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import rentbot; print('ok')" || exit 1
+
+ENTRYPOINT ["rentbot"]
+# Default to continuous mode; override with --once, --seed, --dry-run, etc.
+CMD []

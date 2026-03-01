@@ -1,0 +1,52 @@
+# =============================================================================
+# Rentbot — Docker build context exclusions
+# =============================================================================
+
+# Version control
+.git
+.gitignore
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test / dev
+tests/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Docs (not needed in container)
+_AGENT_PROMPT.md
+_DESCRIPTION.md
+_IMPLEMENTATION_PLAN.md
+
+# Local data and secrets
+.env
+.env.*
+!.env.example
+data/
+
+# Docker assets (avoid recursive context)
+docker/
+!docker/Dockerfile.core
