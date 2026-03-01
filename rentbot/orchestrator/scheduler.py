@@ -43,6 +43,7 @@ from typing import NoReturn
 
 from rentbot.core.run_context import RunContext
 from rentbot.core.settings import Settings
+from rentbot.orchestrator.circuit_breaker import CircuitBreakerRegistry
 from rentbot.orchestrator.runner import run_once
 
 __all__ = [
@@ -109,6 +110,10 @@ async def _api_loop(ctx: RunContext, settings: Settings) -> NoReturn:
     transient failure in one cycle does not halt the scheduler — the loop
     always waits the configured interval and retries.
 
+    A :class:`~rentbot.orchestrator.circuit_breaker.CircuitBreakerRegistry`
+    is created once and passed to every cycle so that per-provider failure
+    history persists across iterations.
+
     Args:
         ctx: Runtime operating-mode flags (seed / dry-run / live).
         settings: Active application settings with interval bounds.
@@ -119,13 +124,23 @@ async def _api_loop(ctx: RunContext, settings: Settings) -> NoReturn:
         settings.poll_interval_api_max,
     )
 
+    circuit_breaker = CircuitBreakerRegistry()
+
     while True:
         try:
-            await run_once(ctx=ctx, settings=settings)
+            await run_once(
+                ctx=ctx,
+                settings=settings,
+                circuit_breaker=circuit_breaker,
+            )
         except Exception:
             logger.exception(
                 "Unhandled exception in API cycle — will retry after interval."
             )
+
+        cb_summary = circuit_breaker.summary()
+        if cb_summary:
+            logger.debug("Circuit breaker state: %s", cb_summary)
 
         interval = next_api_interval(settings)
         logger.info("Next API poll in %.0f s.", interval)

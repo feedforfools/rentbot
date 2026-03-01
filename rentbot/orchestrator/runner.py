@@ -57,6 +57,7 @@ Typical usage::
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import AsyncExitStack
 
 from rentbot.core.exceptions import ConfigError
@@ -65,6 +66,7 @@ from rentbot.core.settings import Settings
 from rentbot.filters.heuristic import HeuristicFilter
 from rentbot.notifiers.notifier import Notifier
 from rentbot.notifiers.telegram import TelegramClient
+from rentbot.orchestrator.circuit_breaker import CircuitBreakerRegistry
 from rentbot.orchestrator.pipeline import CycleStats, run_cycle
 from rentbot.providers.api.casa import CasaProvider
 from rentbot.providers.api.immobiliare import ImmobiliareProvider
@@ -135,6 +137,7 @@ def _build_providers(settings: Settings) -> list[BaseProvider]:
 async def run_once(
     ctx: RunContext,
     settings: Settings | None = None,
+    circuit_breaker: CircuitBreakerRegistry | None = None,
 ) -> CycleStats:
     """Execute a single full poll cycle.
 
@@ -148,6 +151,9 @@ async def run_once(
         settings: Pre-loaded :class:`~rentbot.core.settings.Settings`
             instance.  If ``None``, a fresh instance is loaded from the
             environment and ``.env`` file.
+        circuit_breaker: Optional :class:`CircuitBreakerRegistry` that
+            persists across cycles.  When provided, providers whose circuit
+            is OPEN are skipped and fetch outcomes drive state transitions.
 
     Returns:
         A :class:`~rentbot.orchestrator.pipeline.CycleStats` record
@@ -164,6 +170,8 @@ async def run_once(
     """
     if settings is None:
         settings = Settings()
+
+    t0: float = time.monotonic()
 
     logger.info(
         "run_once starting — mode=%s db=%s",
@@ -241,19 +249,24 @@ async def run_once(
                 hf=hf,
                 notifier=notifier,
                 ctx=ctx,
+                circuit_breaker=circuit_breaker,
             )
 
-        logger.info(
-            "run_once complete — fetched=%d new=%d dup=%d "
-            "passed_filter=%d alerted=%d errors=%d failed_providers=%s",
-            stats.total_fetched,
-            stats.total_new,
-            stats.total_duplicate,
-            stats.total_passed_filter,
-            stats.total_alerted,
-            stats.total_errors,
-            stats.failed_providers or "none",
-        )
+        stats.duration_s = time.monotonic() - t0
+        logger.info("%s", stats.format_cycle_report())
+        for ps in stats.provider_stats:
+            logger.debug(
+                "  provider %-20s fetched=%-3d new=%-3d dup=%-3d "
+                "passed_filter=%-3d alerted=%-3d errors=%-2d%s",
+                ps.source + ":",
+                ps.fetched,
+                ps.new,
+                ps.duplicate,
+                ps.passed_filter,
+                ps.alerted,
+                ps.errors,
+                " [FAILED]" if ps.provider_failed else "",
+            )
         return stats
 
     finally:

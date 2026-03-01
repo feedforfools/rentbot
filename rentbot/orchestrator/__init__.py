@@ -12,8 +12,15 @@ Public API
 * :func:`~rentbot.orchestrator.scheduler.next_api_interval` /
   :func:`~rentbot.orchestrator.scheduler.next_browser_interval` — interval
   jitter helpers; also exposed for testing.
+* :class:`~rentbot.orchestrator.circuit_breaker.CircuitBreakerRegistry` —
+  per-provider circuit breaker with exponential backoff.
 """
 
+from rentbot.orchestrator.circuit_breaker import (
+    CircuitBreakerRegistry,
+    CircuitState,
+    ProviderCircuitState,
+)
 from rentbot.orchestrator.pipeline import (
     CycleStats,
     ProviderCycleStats,
@@ -29,6 +36,10 @@ from rentbot.orchestrator.scheduler import (
 )
 
 __all__ = [
+    # Circuit breaker (E6-T3)
+    "CircuitBreakerRegistry",
+    "CircuitState",
+    "ProviderCircuitState",
     # Continuous scheduler (E6-T2)
     "run_continuous",
     "next_api_interval",

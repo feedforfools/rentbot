@@ -1,4 +1,4 @@
-"""Unit tests for Epic 6 — Orchestration: scheduler (E6-T2).
+"""Unit tests for Epic 6 — Orchestration: scheduler (E6-T2) + circuit breaker (E6-T3) + run summary (E6-T4).
 
 Tests cover:
 - ``next_api_interval`` / ``next_browser_interval`` — pure interval helpers.
@@ -6,6 +6,11 @@ Tests cover:
   is called with a valid jittered value.
 - ``run_continuous`` — verifies both concurrent tasks are created and that
   CancelledError propagates cleanly (clean shutdown path).
+- ``CircuitBreakerRegistry`` — state transitions (CLOSED → OPEN → HALF_OPEN →
+  CLOSED), exponential backoff, threshold behaviour, reset on success.
+- ``run_provider`` with circuit breaker — skips when OPEN, records outcomes.
+- ``CycleStats.format_cycle_report`` + ``duration_s`` — run summary metrics
+  (E6-T4): structure, content, timing assignment in ``run_once``.
 """
 
 from __future__ import annotations
@@ -17,6 +22,12 @@ import pytest
 
 from rentbot.core.run_context import RunContext
 from rentbot.core.settings import Settings
+from rentbot.orchestrator.circuit_breaker import (
+    CircuitBreakerRegistry,
+    CircuitState,
+    ProviderCircuitState,
+)
+from rentbot.orchestrator.pipeline import CycleStats, ProviderCycleStats, run_provider
 from rentbot.orchestrator.scheduler import (
     _api_loop,
     next_api_interval,
@@ -281,7 +292,9 @@ class TestRunContinuous:
         loaded: list[bool] = []
 
         async def fake_run_once(
-            ctx: RunContext, settings: Settings | None = None
+            ctx: RunContext,
+            settings: Settings | None = None,
+            **kwargs: object,
         ) -> None:
             loaded.append(settings is not None)
 
@@ -320,3 +333,531 @@ class TestRunContinuous:
                     run_continuous(ctx=ctx, settings=settings),
                     timeout=5.0,
                 )
+
+
+# ---------------------------------------------------------------------------
+# CircuitBreakerRegistry
+# ---------------------------------------------------------------------------
+
+
+class TestCircuitBreakerBasicTransitions:
+    """Core state machine: CLOSED → OPEN → HALF_OPEN → CLOSED."""
+
+    def test_initial_state_is_closed(self) -> None:
+        cb = CircuitBreakerRegistry()
+        pcs = cb.get_state("immobiliare")
+        assert pcs.state == CircuitState.CLOSED
+        assert pcs.consecutive_failures == 0
+        assert pcs.trip_count == 0
+
+    def test_allow_request_true_when_closed(self) -> None:
+        cb = CircuitBreakerRegistry()
+        assert cb.allow_request("immobiliare") is True
+
+    def test_stays_closed_below_threshold(self) -> None:
+        cb = CircuitBreakerRegistry(failure_threshold=3)
+        cb.record_failure("x")
+        cb.record_failure("x")
+        assert cb.get_state("x").state == CircuitState.CLOSED
+        assert cb.allow_request("x") is True
+
+    def test_opens_at_threshold(self) -> None:
+        cb = CircuitBreakerRegistry(failure_threshold=3)
+        for _ in range(3):
+            cb.record_failure("x")
+        assert cb.get_state("x").state == CircuitState.OPEN
+        assert cb.get_state("x").trip_count == 1
+
+    def test_open_blocks_requests(self) -> None:
+        clock = _FakeClock(0.0)
+        cb = CircuitBreakerRegistry(
+            failure_threshold=2,
+            base_recovery_timeout=100.0,
+            clock=clock,
+        )
+        cb.record_failure("x")
+        cb.record_failure("x")
+        assert cb.allow_request("x") is False
+
+    def test_half_open_after_recovery_timeout(self) -> None:
+        clock = _FakeClock(0.0)
+        cb = CircuitBreakerRegistry(
+            failure_threshold=2,
+            base_recovery_timeout=100.0,
+            clock=clock,
+        )
+        cb.record_failure("x")
+        cb.record_failure("x")
+        # Advance past the recovery timeout.
+        clock.advance(101.0)
+        assert cb.allow_request("x") is True
+        assert cb.get_state("x").state == CircuitState.HALF_OPEN
+
+    def test_half_open_success_closes_circuit(self) -> None:
+        clock = _FakeClock(0.0)
+        cb = CircuitBreakerRegistry(
+            failure_threshold=2,
+            base_recovery_timeout=100.0,
+            clock=clock,
+        )
+        cb.record_failure("x")
+        cb.record_failure("x")
+        clock.advance(101.0)
+        cb.allow_request("x")  # triggers HALF_OPEN
+        cb.record_success("x")
+        pcs = cb.get_state("x")
+        assert pcs.state == CircuitState.CLOSED
+        assert pcs.consecutive_failures == 0
+        assert pcs.trip_count == 0
+
+    def test_half_open_failure_reopens_circuit(self) -> None:
+        clock = _FakeClock(0.0)
+        cb = CircuitBreakerRegistry(
+            failure_threshold=2,
+            base_recovery_timeout=100.0,
+            clock=clock,
+        )
+        cb.record_failure("x")
+        cb.record_failure("x")
+        clock.advance(101.0)
+        cb.allow_request("x")  # triggers HALF_OPEN
+        cb.record_failure("x")
+        pcs = cb.get_state("x")
+        assert pcs.state == CircuitState.OPEN
+        assert pcs.trip_count == 2  # second trip
+
+    def test_success_resets_failure_counter_in_closed(self) -> None:
+        cb = CircuitBreakerRegistry(failure_threshold=5)
+        cb.record_failure("x")
+        cb.record_failure("x")
+        cb.record_success("x")
+        assert cb.get_state("x").consecutive_failures == 0
+
+
+class TestCircuitBreakerBackoff:
+    """Exponential backoff on recovery timeout."""
+
+    def test_first_trip_uses_base_timeout(self) -> None:
+        clock = _FakeClock(0.0)
+        cb = CircuitBreakerRegistry(
+            failure_threshold=1,
+            base_recovery_timeout=60.0,
+            backoff_multiplier=2.0,
+            clock=clock,
+        )
+        cb.record_failure("x")  # trip #1
+        # Not enough time for base timeout.
+        clock.advance(59.0)
+        assert cb.allow_request("x") is False
+        # Just past base timeout → HALF_OPEN.
+        clock.advance(2.0)
+        assert cb.allow_request("x") is True
+
+    def test_second_trip_doubles_timeout(self) -> None:
+        clock = _FakeClock(0.0)
+        cb = CircuitBreakerRegistry(
+            failure_threshold=1,
+            base_recovery_timeout=60.0,
+            backoff_multiplier=2.0,
+            clock=clock,
+        )
+        # Trip #1.
+        cb.record_failure("x")
+        clock.advance(61.0)
+        cb.allow_request("x")  # HALF_OPEN
+        # Probe fails → trip #2 (timeout: 60 * 2^1 = 120 s).
+        cb.record_failure("x")
+        assert cb.get_state("x").trip_count == 2
+        # 100 s is not enough for 120 s timeout.
+        clock.advance(100.0)
+        assert cb.allow_request("x") is False
+        # 21 more → 121 s total from last failure.
+        clock.advance(21.0)
+        assert cb.allow_request("x") is True
+
+    def test_timeout_capped_at_max(self) -> None:
+        clock = _FakeClock(0.0)
+        cb = CircuitBreakerRegistry(
+            failure_threshold=1,
+            base_recovery_timeout=60.0,
+            max_recovery_timeout=100.0,
+            backoff_multiplier=10.0,
+            clock=clock,
+        )
+        # Trip #1.
+        cb.record_failure("x")
+        clock.advance(61.0)
+        cb.allow_request("x")
+        # Trip #2 — raw would be 60*10 = 600, capped at 100.
+        cb.record_failure("x")
+        clock.advance(99.0)
+        assert cb.allow_request("x") is False
+        clock.advance(2.0)
+        assert cb.allow_request("x") is True
+
+    def test_full_reset_clears_trip_count(self) -> None:
+        """After a successful probe, trip_count resets to 0, so next
+        failure sequence starts with base timeout again."""
+        clock = _FakeClock(0.0)
+        cb = CircuitBreakerRegistry(
+            failure_threshold=1,
+            base_recovery_timeout=60.0,
+            backoff_multiplier=2.0,
+            clock=clock,
+        )
+        cb.record_failure("x")           # trip #1
+        clock.advance(61.0)
+        cb.allow_request("x")            # HALF_OPEN
+        cb.record_failure("x")           # trip #2
+        clock.advance(121.0)
+        cb.allow_request("x")            # HALF_OPEN again
+        cb.record_success("x")           # probe succeeds → CLOSED, trip_count=0
+        assert cb.get_state("x").trip_count == 0
+        # New failure starts fresh.
+        cb.record_failure("x")           # trip #1 again
+        assert cb.get_state("x").trip_count == 1
+        # Should use base timeout (60 s), not escalated.
+        clock.advance(59.0)
+        assert cb.allow_request("x") is False
+        clock.advance(2.0)
+        assert cb.allow_request("x") is True
+
+
+class TestCircuitBreakerMultiProvider:
+    """Each provider has an independent circuit state."""
+
+    def test_independent_states(self) -> None:
+        cb = CircuitBreakerRegistry(failure_threshold=2)
+        cb.record_failure("a")
+        cb.record_failure("a")
+        assert cb.get_state("a").state == CircuitState.OPEN
+        assert cb.get_state("b").state == CircuitState.CLOSED
+
+    def test_summary(self) -> None:
+        cb = CircuitBreakerRegistry(failure_threshold=1)
+        cb.record_failure("a")
+        _ = cb.allow_request("b")  # lazy-create
+        result = cb.summary()
+        assert result == {"a": "open", "b": "closed"}
+
+
+class TestCircuitBreakerEdgeCases:
+    """Edge cases and robustness."""
+
+    def test_record_success_on_unknown_provider(self) -> None:
+        """Should lazily create closed state."""
+        cb = CircuitBreakerRegistry()
+        cb.record_success("new_provider")
+        assert cb.get_state("new_provider").state == CircuitState.CLOSED
+
+    def test_half_open_allows_single_probe(self) -> None:
+        """Calling allow_request twice when HALF_OPEN should still return True
+        (no automatic re-open just from checking)."""
+        clock = _FakeClock(0.0)
+        cb = CircuitBreakerRegistry(
+            failure_threshold=1,
+            base_recovery_timeout=10.0,
+            clock=clock,
+        )
+        cb.record_failure("x")
+        clock.advance(11.0)
+        assert cb.allow_request("x") is True   # → HALF_OPEN
+        assert cb.allow_request("x") is True   # still HALF_OPEN, still allows
+        assert cb.get_state("x").state == CircuitState.HALF_OPEN
+
+    def test_threshold_one_trips_immediately(self) -> None:
+        cb = CircuitBreakerRegistry(failure_threshold=1)
+        cb.record_failure("x")
+        assert cb.get_state("x").state == CircuitState.OPEN
+
+
+# ---------------------------------------------------------------------------
+# run_provider with circuit breaker
+# ---------------------------------------------------------------------------
+
+
+class TestRunProviderCircuitBreaker:
+    """Integration of CircuitBreakerRegistry with run_provider."""
+
+    @pytest.mark.asyncio
+    async def test_skips_provider_when_circuit_open(self) -> None:
+        """When the circuit is OPEN, run_provider should skip fetch entirely."""
+        cb = CircuitBreakerRegistry(failure_threshold=1)
+        cb.record_failure("immobiliare")
+        assert cb.get_state("immobiliare").state == CircuitState.OPEN
+
+        provider = _make_fake_provider("immobiliare")
+        repo = MagicMock()
+        hf = MagicMock()
+        notifier = MagicMock()
+        ctx = RunContext(seed=False, dry_run=True)
+
+        stats = await run_provider(provider, repo, hf, notifier, ctx, circuit_breaker=cb)
+
+        assert stats.provider_failed is True
+        assert stats.fetched == 0
+        # fetch_latest should NOT have been called.
+        provider.fetch_latest.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_records_success_on_successful_fetch(self) -> None:
+        cb = CircuitBreakerRegistry(failure_threshold=3)
+        cb.record_failure("immobiliare")
+        cb.record_failure("immobiliare")
+        assert cb.get_state("immobiliare").consecutive_failures == 2
+
+        provider = _make_fake_provider("immobiliare", listings=[])
+        repo = MagicMock()
+        hf = MagicMock()
+        notifier = MagicMock()
+        ctx = RunContext(seed=False, dry_run=True)
+
+        stats = await run_provider(provider, repo, hf, notifier, ctx, circuit_breaker=cb)
+
+        assert stats.provider_failed is False
+        assert cb.get_state("immobiliare").consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_records_failure_on_fetch_exception(self) -> None:
+        cb = CircuitBreakerRegistry(failure_threshold=5)
+
+        provider = _make_fake_provider("immobiliare")
+        provider.fetch_latest = AsyncMock(side_effect=RuntimeError("timeout"))
+        repo = MagicMock()
+        hf = MagicMock()
+        notifier = MagicMock()
+        ctx = RunContext(seed=False, dry_run=True)
+
+        stats = await run_provider(provider, repo, hf, notifier, ctx, circuit_breaker=cb)
+
+        assert stats.provider_failed is True
+        assert cb.get_state("immobiliare").consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_no_circuit_breaker_works_as_before(self) -> None:
+        """Without a circuit breaker, run_provider should behave identically."""
+        provider = _make_fake_provider("immobiliare", listings=[])
+        repo = MagicMock()
+        hf = MagicMock()
+        notifier = MagicMock()
+        ctx = RunContext(seed=False, dry_run=True)
+
+        stats = await run_provider(provider, repo, hf, notifier, ctx, circuit_breaker=None)
+
+        assert stats.provider_failed is False
+        assert stats.fetched == 0
+
+
+# ---------------------------------------------------------------------------
+# CycleStats.format_cycle_report + duration_s  (E6-T4)
+# ---------------------------------------------------------------------------
+
+
+class TestCycleStatsReport:
+    """Tests for CycleStats.duration_s and format_cycle_report()."""
+
+    def test_duration_s_default_is_zero(self) -> None:
+        stats = CycleStats()
+        assert stats.duration_s == 0.0
+
+    def test_duration_s_is_settable(self) -> None:
+        stats = CycleStats()
+        stats.duration_s = 3.75
+        assert stats.duration_s == 3.75
+
+    def test_format_report_no_providers(self) -> None:
+        """With no providers the header line is still emitted cleanly."""
+        stats = CycleStats(duration_s=1.2)
+        report = stats.format_cycle_report()
+        assert "cycle complete in 1.2s" in report
+        assert "fetched=0" in report
+        assert "new=0" in report
+        assert "dup=0" in report
+        assert "passed_filter=0" in report
+        assert "alerted=0" in report
+        assert "errors=0" in report
+        # No failed_providers section when list is empty
+        assert "failed_providers" not in report
+
+    def test_format_report_single_provider_passing(self) -> None:
+        ps = ProviderCycleStats(
+            source="immobiliare",
+            fetched=10,
+            new=4,
+            duplicate=6,
+            passed_filter=3,
+            alerted=3,
+            errors=0,
+        )
+        stats = CycleStats(provider_stats=[ps], duration_s=2.0)
+        report = stats.format_cycle_report()
+
+        lines = report.splitlines()
+        assert len(lines) == 2  # header + 1 provider
+
+        # Header totals match the single provider
+        assert "fetched=10" in lines[0]
+        assert "new=4" in lines[0]
+        assert "dup=6" in lines[0]
+        assert "passed_filter=3" in lines[0]
+        assert "alerted=3" in lines[0]
+        assert "errors=0" in lines[0]
+
+        # Provider line
+        assert "immobiliare" in lines[1]
+        assert "fetched=10" in lines[1]
+        assert "[FAILED]" not in lines[1]
+
+    def test_format_report_failed_provider_marker(self) -> None:
+        ps = ProviderCycleStats(source="casa", provider_failed=True)
+        stats = CycleStats(provider_stats=[ps], duration_s=0.5)
+        report = stats.format_cycle_report()
+
+        # Header must mention failed provider name
+        assert "casa" in report
+        assert "failed_providers" in report
+        # Provider line (indented) must include [FAILED] marker
+        provider_line = [l for l in report.splitlines() if l.startswith("  ") and "casa" in l]
+        assert len(provider_line) == 1
+        assert "[FAILED]" in provider_line[0]
+
+    def test_format_report_multiple_providers_aggregate_totals(self) -> None:
+        ps1 = ProviderCycleStats(
+            source="immobiliare", fetched=8, new=3, duplicate=5,
+            passed_filter=2, alerted=2, errors=0,
+        )
+        ps2 = ProviderCycleStats(
+            source="casa", fetched=4, new=1, duplicate=3,
+            passed_filter=1, alerted=1, errors=1,
+        )
+        stats = CycleStats(provider_stats=[ps1, ps2], duration_s=3.14)
+        report = stats.format_cycle_report()
+
+        lines = report.splitlines()
+        assert len(lines) == 3  # header + 2 providers
+
+        # Aggregate totals in header
+        assert "fetched=12" in lines[0]
+        assert "new=4" in lines[0]
+        assert "dup=8" in lines[0]
+        assert "passed_filter=3" in lines[0]
+        assert "alerted=3" in lines[0]
+        assert "errors=1" in lines[0]
+        assert "3.1s" in lines[0]  # duration rounded to 1 decimal
+
+        # Both provider names appear in their respective lines
+        provider_sources = [l.split(":")[0].strip() for l in lines[1:]]
+        assert "immobiliare" in provider_sources
+        assert "casa" in provider_sources
+
+    def test_format_report_duration_one_decimal(self) -> None:
+        """Duration is always formatted to exactly one decimal place."""
+        stats = CycleStats(duration_s=10.0)
+        assert "10.0s" in stats.format_cycle_report()
+
+        stats2 = CycleStats(duration_s=0.123)
+        assert "0.1s" in stats2.format_cycle_report()
+
+    @pytest.mark.asyncio
+    async def test_run_once_sets_duration_s(self) -> None:
+        """run_once must assign a positive duration_s to the returned CycleStats."""
+        from rentbot.orchestrator.runner import run_once
+
+        ctx = RunContext(seed=True, dry_run=False)
+        settings = MagicMock(spec=Settings)
+        settings.database_path = ":memory:"
+        settings.database_path_resolved = MagicMock()
+        settings.database_path_resolved.parent.mkdir = MagicMock()
+        settings.telegram_configured = False
+        settings.immobiliare_vrt = None
+        settings.casa_search_url = None
+        settings.to_filter_criteria.return_value = MagicMock()
+
+        # Patch open_db so we don't touch the filesystem.
+        fake_conn = AsyncMock()
+        fake_conn.close = AsyncMock()
+
+        # Patch run_cycle to return a bare CycleStats instantly.
+        fake_stats = CycleStats()
+
+        with (
+            patch("rentbot.orchestrator.runner.open_db", return_value=fake_conn),
+            patch(
+                "rentbot.orchestrator.runner.run_cycle",
+                new=AsyncMock(return_value=fake_stats),
+            ),
+            patch("rentbot.orchestrator.runner.time") as mock_time,
+        ):
+            # Simulate monotonic advancing by 1.5 s over the cycle.
+            mock_time.monotonic.side_effect = [100.0, 101.5]
+            returned = await run_once(ctx=ctx, settings=settings)
+
+        assert returned.duration_s == pytest.approx(1.5, abs=0.01)
+
+    @pytest.mark.asyncio
+    async def test_run_once_logs_cycle_report(self, caplog: pytest.LogCaptureFixture) -> None:
+        """run_once must emit the format_cycle_report() text at INFO level."""
+        import logging
+
+        from rentbot.orchestrator.runner import run_once
+
+        ctx = RunContext(seed=True, dry_run=False)
+        settings = MagicMock(spec=Settings)
+        settings.database_path = ":memory:"
+        settings.database_path_resolved = MagicMock()
+        settings.database_path_resolved.parent.mkdir = MagicMock()
+        settings.telegram_configured = False
+        settings.immobiliare_vrt = None
+        settings.casa_search_url = None
+        settings.to_filter_criteria.return_value = MagicMock()
+
+        fake_conn = AsyncMock()
+        fake_conn.close = AsyncMock()
+        fake_stats = CycleStats()
+
+        with (
+            patch("rentbot.orchestrator.runner.open_db", return_value=fake_conn),
+            patch(
+                "rentbot.orchestrator.runner.run_cycle",
+                new=AsyncMock(return_value=fake_stats),
+            ),
+            caplog.at_level(logging.INFO, logger="rentbot.orchestrator.runner"),
+        ):
+            await run_once(ctx=ctx, settings=settings)
+
+        # The INFO log must contain the key phrase from format_cycle_report.
+        info_messages = " ".join(
+            r.message for r in caplog.records if r.levelno == logging.INFO
+        )
+        assert "cycle complete in" in info_messages
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+class _FakeClock:
+    """Deterministic clock for circuit breaker tests."""
+
+    def __init__(self, start: float = 0.0) -> None:
+        self._now = start
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+def _make_fake_provider(
+    source: str,
+    listings: list | None = None,
+) -> MagicMock:
+    """Create a MagicMock that quacks like a BaseProvider."""
+    from rentbot.core.models import ListingSource
+
+    provider = MagicMock()
+    provider.source = ListingSource(source)
+    provider.fetch_latest = AsyncMock(return_value=listings or [])
+    return provider

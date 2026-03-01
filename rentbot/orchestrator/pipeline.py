@@ -76,6 +76,7 @@ from rentbot.core.models import Listing, ListingSource
 from rentbot.core.run_context import RunContext
 from rentbot.filters.heuristic import HeuristicFilter
 from rentbot.notifiers.notifier import Notifier
+from rentbot.orchestrator.circuit_breaker import CircuitBreakerRegistry
 from rentbot.providers.base import BaseProvider
 from rentbot.storage.repository import ListingRepository, canonical_id_from_listing
 
@@ -132,9 +133,14 @@ class CycleStats:
     Attributes:
         provider_stats: One :class:`ProviderCycleStats` entry per provider
             that participated in the cycle.
+        duration_s: Wall-clock seconds elapsed from the start of
+            :func:`~rentbot.orchestrator.runner.run_once` to the completion
+            of :func:`run_cycle`.  Set by :func:`run_once`; defaults to
+            ``0.0`` when produced by :func:`run_cycle` alone.
     """
 
     provider_stats: list[ProviderCycleStats] = field(default_factory=list)
+    duration_s: float = 0.0
 
     @property
     def total_fetched(self) -> int:
@@ -158,7 +164,7 @@ class CycleStats:
 
     @property
     def total_alerted(self) -> int:
-        """Sum of successfully alertedf listings across all providers."""
+        """Sum of successfully alerted listings across all providers."""
         return sum(p.alerted for p in self.provider_stats)
 
     @property
@@ -170,6 +176,44 @@ class CycleStats:
     def failed_providers(self) -> list[str]:
         """Source labels of providers whose fetch call raised an exception."""
         return [p.source for p in self.provider_stats if p.provider_failed]
+
+    def format_cycle_report(self) -> str:
+        """Return a human-readable multi-line cycle summary for logging.
+
+        The first line is the aggregate summary including cycle duration.  One
+        additional line per provider follows, indented by two spaces, showing
+        individual counters and a ``[FAILED]`` marker when the provider's fetch
+        call raised an exception.
+
+        Example output::
+
+            cycle complete in 2.3s: fetched=12 new=5 dup=7 passed_filter=3 alerted=3 errors=0
+              immobiliare: fetched=8  new=4  dup=4  passed_filter=2  alerted=2  errors=0
+              casa:        fetched=4  new=1  dup=3  passed_filter=1  alerted=1  errors=0
+
+        Returns:
+            Multi-line string suitable for a single ``logger.info()`` call.
+        """
+        failed_part = (
+            f" failed_providers={self.failed_providers}" if self.failed_providers else ""
+        )
+        header = (
+            f"cycle complete in {self.duration_s:.1f}s: "
+            f"fetched={self.total_fetched} new={self.total_new} "
+            f"dup={self.total_duplicate} passed_filter={self.total_passed_filter} "
+            f"alerted={self.total_alerted} errors={self.total_errors}"
+            f"{failed_part}"
+        )
+        lines: list[str] = [header]
+        for ps in self.provider_stats:
+            status = " [FAILED]" if ps.provider_failed else ""
+            lines.append(
+                f"  {ps.source}: "
+                f"fetched={ps.fetched} new={ps.new} dup={ps.duplicate} "
+                f"passed_filter={ps.passed_filter} alerted={ps.alerted} "
+                f"errors={ps.errors}{status}"
+            )
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -280,12 +324,18 @@ async def run_provider(
     hf: HeuristicFilter,
     notifier: Notifier,
     ctx: RunContext,  # noqa: ARG001  (threaded for symmetry; notifier owns mode)
+    circuit_breaker: CircuitBreakerRegistry | None = None,
 ) -> ProviderCycleStats:
     """Fetch all listings from one provider and push them through the pipeline.
 
     Provider-level errors (fetch failures) are caught here and reflected in
     :attr:`ProviderCycleStats.provider_failed`.  Per-listing errors bubble up
     from :func:`process_listing` and are caught here as well.
+
+    If a :class:`~rentbot.orchestrator.circuit_breaker.CircuitBreakerRegistry`
+    is supplied, the circuit is checked before fetching and the outcome
+    (success / failure) is recorded afterwards.  Providers whose circuit is
+    **OPEN** are skipped entirely for the cycle.
 
     Args:
         provider: Fully configured provider instance (already inside its async
@@ -295,6 +345,9 @@ async def run_provider(
         notifier: Notifier instance shared across all providers.
         ctx: Runtime context flags (kept for API symmetry; notifier already
             honours them internally).
+        circuit_breaker: Optional circuit breaker registry.  When provided,
+            the provider is skipped if its circuit is OPEN, and fetch
+            success/failure drives state transitions.
 
     Returns:
         A :class:`ProviderCycleStats` with counters for this provider's
@@ -302,6 +355,17 @@ async def run_provider(
     """
     source_label = str(provider.source)
     stats = ProviderCycleStats(source=source_label)
+
+    # ------------------------------------------------------------------
+    # Circuit breaker gate
+    # ------------------------------------------------------------------
+    if circuit_breaker is not None and not circuit_breaker.allow_request(source_label):
+        logger.info(
+            "Provider %s: circuit OPEN — skipping this cycle.",
+            source_label,
+        )
+        stats.provider_failed = True
+        return stats
 
     # ------------------------------------------------------------------
     # Fetch
@@ -315,8 +379,14 @@ async def run_provider(
             exc,
             exc_info=True,
         )
+        if circuit_breaker is not None:
+            circuit_breaker.record_failure(source_label)
         stats.provider_failed = True
         return stats
+
+    # Fetch succeeded — record in circuit breaker.
+    if circuit_breaker is not None:
+        circuit_breaker.record_success(source_label)
 
     stats.fetched = len(listings)
     logger.info(
@@ -365,6 +435,7 @@ async def run_cycle(
     hf: HeuristicFilter,
     notifier: Notifier,
     ctx: RunContext,
+    circuit_breaker: CircuitBreakerRegistry | None = None,
 ) -> CycleStats:
     """Run one full poll cycle across all providers concurrently.
 
@@ -383,6 +454,9 @@ async def run_cycle(
             coroutines).
         notifier: Shared notifier instance (stateless per-call).
         ctx: Runtime context threaded to every provider coroutine.
+        circuit_breaker: Optional :class:`CircuitBreakerRegistry`.  When
+            provided, providers whose circuit is OPEN are skipped and
+            fetch outcomes update the circuit state.
 
     Returns:
         A :class:`CycleStats` aggregating counters from every provider.
@@ -392,7 +466,7 @@ async def run_cycle(
         return CycleStats()
 
     tasks = [
-        run_provider(p, repo, hf, notifier, ctx)
+        run_provider(p, repo, hf, notifier, ctx, circuit_breaker=circuit_breaker)
         for p in providers
     ]
     raw_results = await asyncio.gather(*tasks, return_exceptions=True)
