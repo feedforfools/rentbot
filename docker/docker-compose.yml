@@ -68,6 +68,19 @@ services:
     # cycle and flush SQLite WAL before the container is force-killed.
     stop_grace_period: 30s
 
+    # Resource limits (optional — uncomment to constrain the container).
+    # The core poller is intentionally lightweight: it mostly sleeps between
+    # 5-10 minute poll cycles.  Adjust upward if you add more providers.
+    #
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.25"
+    #       memory: 256M
+    #     reservations:
+    #       cpus: "0.05"
+    #       memory: 64M
+
 # =============================================================================
 # Volumes
 # =============================================================================

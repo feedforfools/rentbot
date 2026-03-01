@@ -105,15 +105,113 @@ python -m rentbot --log-level DEBUG --log-format json
 
 ## Docker
 
-```bash
-# Core container only (API providers + Telegram)
-docker compose --profile core up
+The MVP ships a single **core** container. A browser-automation worker container (for Facebook / Idealista) will be added in Phase 2.
 
-# Full stack (core + browser worker)
-docker compose --profile full up
+### Prerequisites
+
+- Docker ≥ 24 and Docker Compose v2
+- `.env` file with credentials (see [Configuration](#configuration))
+
+### Quick Start
+
+All commands can be run from the **project root** (the directory containing `.env`):
+
+```bash
+# 1. Build the image
+docker compose -f docker/docker-compose.yml build
+
+# 2. First-run seed — populate DB without sending any alerts
+docker compose -f docker/docker-compose.yml run --rm core --seed
+
+# 3. Start continuous polling in the background
+docker compose -f docker/docker-compose.yml up -d
+
+# 4. Follow live logs
+docker compose -f docker/docker-compose.yml logs -f core
+
+# 5. Stop
+docker compose -f docker/docker-compose.yml down
 ```
 
-See `docker/` for `Dockerfile.core`, `Dockerfile.worker`, and `docker-compose.yml`.
+Alternatively, run commands from inside the `docker/` subdirectory (no `-f` flag needed):
+
+```bash
+cd docker/
+docker compose build
+docker compose run --rm core --seed
+docker compose up -d
+```
+
+### Common Operations
+
+| Task | Command (from project root) |
+|------|-----------------------------|
+| Build image | `docker compose -f docker/docker-compose.yml build` |
+| Seed (first run, no alerts) | `docker compose -f docker/docker-compose.yml run --rm core --seed` |
+| Start background | `docker compose -f docker/docker-compose.yml up -d` |
+| Start foreground | `docker compose -f docker/docker-compose.yml up` |
+| Dry-run test | `docker compose -f docker/docker-compose.yml run --rm core --dry-run --once` |
+| Follow logs | `docker compose -f docker/docker-compose.yml logs -f core` |
+| Stop | `docker compose -f docker/docker-compose.yml down` |
+| Stop + wipe DB | `docker compose -f docker/docker-compose.yml down -v` |
+| Check container health | `docker inspect --format='{{.State.Health.Status}}' rentbot_core` |
+
+### Resource Sizing
+
+The core container polls two API providers on a randomised 5–10 minute interval. It is deliberately lightweight.
+
+| Resource | Minimum | Recommended | Notes |
+|----------|---------|-------------|-------|
+| CPU | 0.05 vCPU | 0.1 vCPU | Mostly idle between polls; brief burst during fetch + parse |
+| Memory | 64 MB | 128 MB | Python runtime + aiosqlite; use 256 MB for a comfortable safety margin |
+| Disk (DB) | 10 MB | 50 MB | SQLite grows a few KB/day; years of history before sizing matters |
+| Network | < 0.5 MB/poll | < 2 MB/poll | Two provider API calls per cycle, compressed JSON responses |
+
+To enforce hard limits, add a `deploy.resources` block to the `core` service in `docker-compose.yml`:
+
+```yaml
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+```
+
+### Persistent Data
+
+SQLite is stored in the `rentbot_data` Docker managed volume, mounted at `/data/rentbot.db` inside the container.
+
+```bash
+# Find where Docker stores the volume on the host
+docker volume inspect rentbot_data
+
+# Backup the database to the current directory
+docker run --rm \
+    -v rentbot_data:/data \
+    -v "$(pwd)":/backup \
+    busybox cp /data/rentbot.db /backup/rentbot-backup.db
+```
+
+> **Production tip:** swap the named volume for a host-bind mount so the DB path is explicit and easy to include in existing backup routines:
+> ```yaml
+> volumes:
+>   - /opt/rentbot/data:/data
+> ```
+
+### Health Checks
+
+After each polling cycle the scheduler writes a heartbeat timestamp to `/tmp/rentbot_heartbeat`. The Docker `HEALTHCHECK` reads that file and reports `healthy` as long as the last cycle completed within the past 30 minutes.
+
+```bash
+# Quick status check
+docker inspect --format='{{.State.Health.Status}}' rentbot_core
+
+# Full health history (last 5 check results)
+docker inspect --format='{{json .State.Health}}' rentbot_core | python -m json.tool
+```
 
 ---
 
@@ -233,3 +331,15 @@ pytest -s
 ```
 
 ---
+
+## Project Status
+
+**MVP phase complete.** The API-based pipeline (Immobiliare.it + Casa.it → dedup → heuristic filter → Telegram) is operational and containerised.
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| Phase 1 — MVP | Epics 0–3 (foundation, domain, notifications, API providers), Epic 6 (orchestration), Epic 7 (Docker), Epic 8 (integration tests + observability) | 🔄 Epic 8 remaining |
+| Phase 2 — LLM + Browser | Epic 4 (LLM filter), Epic 5 (Facebook + Idealista), E6-T7 (core↔worker contract), Epic 7 Phase 2 additions | 🔜 Planned |
+| Phase 3 — Extensibility | Epic 9 (provider plugin registry) | 🔜 Future |
+
+All 276 unit and integration tests pass. Run `pytest` to verify.
