@@ -60,7 +60,13 @@ services:
       # separate staging volume per the core↔worker contract in E6-T7).
       - rentbot_data:/data
 
-    # Restart policy and health-check configuration added in E7-T4.
+    # Restart policy: restart unless explicitly stopped by the operator.
+    # Covers OOM kills, unhandled crashes, and host reboots.
+    restart: unless-stopped
+
+    # Give the SIGTERM handler (E6-T6) enough time to finish the current
+    # cycle and flush SQLite WAL before the container is force-killed.
+    stop_grace_period: 30s
 
 # =============================================================================
 # Volumes

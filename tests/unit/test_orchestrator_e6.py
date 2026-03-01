@@ -34,7 +34,10 @@ from rentbot.orchestrator.circuit_breaker import (
 )
 from rentbot.orchestrator.pipeline import CycleStats, ProviderCycleStats, run_provider
 from rentbot.orchestrator.scheduler import (
+    HEARTBEAT_PATH,
+    HEARTBEAT_STALE_AFTER_S,
     _api_loop,
+    _write_heartbeat,
     next_api_interval,
     next_browser_interval,
     run_continuous,
@@ -248,6 +251,134 @@ class TestApiLoop:
                 await _api_loop(ctx=ctx, settings=settings)
 
         assert call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat (E7-T4)
+# ---------------------------------------------------------------------------
+
+
+class TestHeartbeat:
+    """E7-T4: health-check heartbeat file written by the API polling loop."""
+
+    # ------------------------------------------------------------------
+    # _write_heartbeat unit tests
+    # ------------------------------------------------------------------
+
+    def test_write_heartbeat_creates_file(self, tmp_path: object) -> None:
+        """_write_heartbeat must create the file if it does not exist."""
+        import pathlib
+
+        dest = str(pathlib.Path(str(tmp_path)) / "hb.txt")  # type: ignore[arg-type]
+        _write_heartbeat(path=dest)
+        assert pathlib.Path(dest).exists()
+
+    def test_write_heartbeat_writes_valid_epoch(self, tmp_path: object) -> None:
+        """File content must be parseable as a float close to the current time."""
+        import pathlib
+        import time
+
+        dest = pathlib.Path(str(tmp_path)) / "hb.txt"  # type: ignore[operator]
+        t_before = time.time()
+        _write_heartbeat(path=str(dest))
+        t_after = time.time()
+
+        written = float(dest.read_text(encoding="utf-8"))
+        assert t_before <= written <= t_after
+
+    def test_write_heartbeat_overwrites_existing_file(self, tmp_path: object) -> None:
+        """Calling _write_heartbeat twice must update the timestamp."""
+        import pathlib
+        import time
+
+        dest = pathlib.Path(str(tmp_path)) / "hb.txt"  # type: ignore[operator]
+        _write_heartbeat(path=str(dest))
+        first = float(dest.read_text(encoding="utf-8"))
+        time.sleep(0.05)  # small gap to ensure monotonic difference
+        _write_heartbeat(path=str(dest))
+        second = float(dest.read_text(encoding="utf-8"))
+
+        assert second >= first
+
+    def test_write_heartbeat_does_not_raise_on_bad_path(self, caplog: object) -> None:
+        """An unwritable path must be logged as a warning, not raise."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="rentbot.orchestrator.scheduler"):  # type: ignore[union-attr]
+            _write_heartbeat(path="/nonexistent_dir_RENTBOT_TEST/hb.txt")
+        # No exception propagated; a warning was logged.
+        assert any("heartbeat" in r.message.lower() for r in caplog.records)  # type: ignore[union-attr]
+
+    def test_heartbeat_path_constant_has_expected_suffix(self) -> None:
+        """HEARTBEAT_PATH must end with 'rentbot_heartbeat'."""
+        assert HEARTBEAT_PATH.endswith("rentbot_heartbeat")
+
+    def test_heartbeat_stale_threshold_is_positive(self) -> None:
+        """HEARTBEAT_STALE_AFTER_S must be a positive integer."""
+        assert isinstance(HEARTBEAT_STALE_AFTER_S, int)
+        assert HEARTBEAT_STALE_AFTER_S > 0
+
+    # ------------------------------------------------------------------
+    # Integration of heartbeat writing in _api_loop
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_api_loop_writes_heartbeat_on_success(
+        self, ctx: RunContext, settings: MagicMock
+    ) -> None:
+        """_write_heartbeat is called after a successful run_once."""
+        heartbeat_calls: list[int] = []
+
+        async def fake_run_once(**kwargs: object) -> CycleStats:
+            return CycleStats()
+
+        async def fake_sleep(interval: float) -> None:
+            raise asyncio.CancelledError
+
+        def fake_write_heartbeat(*args: object, **kwargs: object) -> None:
+            heartbeat_calls.append(1)
+
+        with (
+            patch("rentbot.orchestrator.scheduler.run_once", side_effect=fake_run_once),
+            patch("asyncio.sleep", side_effect=fake_sleep),
+            patch(
+                "rentbot.orchestrator.scheduler._write_heartbeat",
+                side_effect=fake_write_heartbeat,
+            ),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _api_loop(ctx=ctx, settings=settings)
+
+        assert len(heartbeat_calls) == 1, "_write_heartbeat not called after successful cycle"
+
+    @pytest.mark.asyncio
+    async def test_api_loop_writes_heartbeat_after_run_once_failure(
+        self, ctx: RunContext, settings: MagicMock
+    ) -> None:
+        """_write_heartbeat is called even when run_once raises an exception."""
+        heartbeat_calls: list[int] = []
+
+        async def boom(**kwargs: object) -> None:
+            raise RuntimeError("provider failure")
+
+        async def fake_sleep(interval: float) -> None:
+            raise asyncio.CancelledError
+
+        def fake_write_heartbeat(*args: object, **kwargs: object) -> None:
+            heartbeat_calls.append(1)
+
+        with (
+            patch("rentbot.orchestrator.scheduler.run_once", side_effect=boom),
+            patch("asyncio.sleep", side_effect=fake_sleep),
+            patch(
+                "rentbot.orchestrator.scheduler._write_heartbeat",
+                side_effect=fake_write_heartbeat,
+            ),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await _api_loop(ctx=ctx, settings=settings)
+
+        assert len(heartbeat_calls) == 1, "_write_heartbeat not called after failing cycle"
 
 
 # ---------------------------------------------------------------------------

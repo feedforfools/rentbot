@@ -39,8 +39,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import random
 import signal
+import time
 from typing import NoReturn
 
 from rentbot.core.run_context import RunContext
@@ -49,10 +51,49 @@ from rentbot.orchestrator.circuit_breaker import CircuitBreakerRegistry
 from rentbot.orchestrator.runner import run_once
 
 __all__ = [
+    "HEARTBEAT_PATH",
     "next_api_interval",
     "next_browser_interval",
     "run_continuous",
 ]
+
+# ---------------------------------------------------------------------------
+# Health-check heartbeat (E7-T4)
+# ---------------------------------------------------------------------------
+
+#: Path to the heartbeat file written after each API cycle.
+#: The Docker ``HEALTHCHECK`` in ``Dockerfile.core`` reads this file and
+#: considers the container unhealthy if the timestamp is stale
+#: (older than ``HEARTBEAT_STALE_AFTER_S`` seconds).
+#: Override via the ``RENTBOT_HEARTBEAT_PATH`` environment variable if
+#: the default ``/tmp`` location is not writable.
+HEARTBEAT_PATH: str = os.environ.get("RENTBOT_HEARTBEAT_PATH", "/tmp/rentbot_heartbeat")
+
+#: Threshold used by the container health check.  Exposed as a constant so
+#: the Dockerfile and the code stay in sync — 1800 s = 3 × max API interval
+#: (default max = 600 s).  Generous enough to tolerate consecutive cycle
+#: failures without immediately marking the container unhealthy.
+HEARTBEAT_STALE_AFTER_S: int = 1800
+
+
+def _write_heartbeat(path: str = HEARTBEAT_PATH) -> None:
+    """Write the current epoch timestamp to the heartbeat file.
+
+    Called at the end of every :func:`_api_loop` iteration (success *and*
+    failure) so that the Docker health check can distinguish a live-but-
+    failing process from a completely hung or OOM-killed one.
+
+    Errors are logged at WARNING level and never propagated — a heartbeat
+    write failure must not crash the polling loop.
+
+    Args:
+        path: Destination file path.  Defaults to :data:`HEARTBEAT_PATH`.
+    """
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(str(time.time()))
+    except OSError:
+        logger.warning("Failed to write heartbeat file '%s'.", path, exc_info=True)
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +180,10 @@ async def _api_loop(ctx: RunContext, settings: Settings) -> NoReturn:
             logger.exception(
                 "Unhandled exception in API cycle — will retry after interval."
             )
+
+        # Write heartbeat after every iteration (success or failure) so the
+        # Docker health check can confirm the process is alive and looping.
+        _write_heartbeat()
 
         cb_summary = circuit_breaker.summary()
         if cb_summary:

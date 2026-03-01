@@ -57,10 +57,24 @@ ENV DATABASE_PATH=/data/rentbot.db
 USER rentbot
 WORKDIR /home/rentbot
 
-# Health-check: verify the Python process is importable (lightweight).
-# A richer HTTP-based health-check can be added in E7-T4.
-HEALTHCHECK --interval=60s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import rentbot; print('ok')" || exit 1
+# Health-check: verify the running process is alive and cycling.
+# The scheduler writes the current epoch timestamp to /tmp/rentbot_heartbeat
+# after every poll iteration.  This check reads that file and fails if the
+# timestamp is missing or older than 1800 s (3 × default max poll interval).
+# --start-period gives the container time to complete its first full cycle
+# (DB init + two API requests) before the health check is evaluated.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+    CMD python -c "
+import sys, time, os
+p = '/tmp/rentbot_heartbeat'
+if not os.path.exists(p):
+    sys.exit(1)
+try:
+    age = time.time() - float(open(p).read())
+except (ValueError, OSError):
+    sys.exit(1)
+sys.exit(0 if age < 1800 else 1)
+"
 
 ENTRYPOINT ["rentbot"]
 # Default to continuous mode; override with --once, --seed, --dry-run, etc.
