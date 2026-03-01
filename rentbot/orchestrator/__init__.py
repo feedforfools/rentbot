@@ -2,11 +2,16 @@
 
 Public API
 ----------
-* :func:`~rentbot.orchestrator.runner.run_once` — top-level entry-point for
-  one full poll cycle; assembles all components and delegates to
-  :func:`~rentbot.orchestrator.pipeline.run_cycle`.
+* :func:`~rentbot.orchestrator.scheduler.run_continuous` — default runtime
+  entry-point; runs API and browser loops indefinitely with randomised sleep
+  intervals.
+* :func:`~rentbot.orchestrator.runner.run_once` — single poll cycle; used
+  by :func:`run_continuous` and exposed for ``--once`` mode / testing.
 * :func:`~rentbot.orchestrator.pipeline.run_cycle` — concurrent per-provider
   gather-and-process loop; useful for testing or custom orchestration.
+* :func:`~rentbot.orchestrator.scheduler.next_api_interval` /
+  :func:`~rentbot.orchestrator.scheduler.next_browser_interval` — interval
+  jitter helpers; also exposed for testing.
 """
 
 from rentbot.orchestrator.pipeline import (
@@ -17,9 +22,18 @@ from rentbot.orchestrator.pipeline import (
     run_provider,
 )
 from rentbot.orchestrator.runner import run_once
+from rentbot.orchestrator.scheduler import (
+    next_api_interval,
+    next_browser_interval,
+    run_continuous,
+)
 
 __all__ = [
-    # High-level entry-point (E6-T1)
+    # Continuous scheduler (E6-T2)
+    "run_continuous",
+    "next_api_interval",
+    "next_browser_interval",
+    # Single-cycle entry-point (E6-T1)
     "run_once",
     # Pipeline primitives
     "CycleStats",
