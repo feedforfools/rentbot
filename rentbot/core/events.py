@@ -41,6 +41,7 @@ __all__ = [
     "PROVIDER_DONE",
     # Listing pipeline stages
     "LISTING_DUPLICATE",
+    "LISTING_CROSS_PLATFORM_DUP",
     "LISTING_NEW",
     "LISTING_FILTERED",
     "LISTING_ALERTED",
@@ -87,6 +88,10 @@ PROVIDER_DONE: str = "PROVIDER_DONE"
 
 #: Listing was already in the dedup DB; skipped without re-processing.
 LISTING_DUPLICATE: str = "LISTING_DUPLICATE"
+
+#: A listing matched an existing listing from a different provider
+#: based on content fingerprint (address + price + area).
+LISTING_CROSS_PLATFORM_DUP: str = "LISTING_CROSS_PLATFORM_DUP"
 
 #: Listing is new; inserted into the DB (store-before-filter contract).
 LISTING_NEW: str = "LISTING_NEW"

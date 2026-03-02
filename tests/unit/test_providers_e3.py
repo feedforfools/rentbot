@@ -779,6 +779,7 @@ def _make_mock_repo(
     """Build a mocked :class:`ListingRepository`."""
     repo: AsyncMock = AsyncMock(spec=ListingRepository)
     repo.exists.return_value = exists
+    repo.exists_by_content_fp.return_value = None
     if insert_raises:
         repo.insert.side_effect = ListingAlreadyExistsError("immobiliare:99999")
     else:
@@ -989,6 +990,7 @@ class TestRunProvider:
         # repo reports nothing seen yet
         repo: AsyncMock = AsyncMock(spec=ListingRepository)
         repo.exists.return_value = False
+        repo.exists_by_content_fp.return_value = None
         repo.insert.return_value = "cid"
         hf = _make_mock_hf(passed=True)
         notifier = _make_mock_notifier(send_returns=True)
@@ -1026,6 +1028,7 @@ class TestRunCycle:
         provider = _MockProvider([listing])
         repo: AsyncMock = AsyncMock(spec=ListingRepository)
         repo.exists.return_value = False
+        repo.exists_by_content_fp.return_value = None
         repo.insert.return_value = "cid"
         hf = _make_mock_hf(passed=True)
         notifier = _make_mock_notifier(send_returns=True)
@@ -1046,6 +1049,7 @@ class TestRunCycle:
 
         repo: AsyncMock = AsyncMock(spec=ListingRepository)
         repo.exists.return_value = False
+        repo.exists_by_content_fp.return_value = None
         repo.insert.return_value = "cid"
         hf = _make_mock_hf(passed=True)
         notifier = _make_mock_notifier(send_returns=True)
@@ -1083,6 +1087,7 @@ class TestRunCycle:
 
         repo: AsyncMock = AsyncMock(spec=ListingRepository)
         repo.exists.return_value = False
+        repo.exists_by_content_fp.return_value = None
         repo.insert.return_value = "cid"
         hf = _make_mock_hf(passed=True)
         notifier = _make_mock_notifier(send_returns=True)

@@ -33,12 +33,13 @@ from datetime import UTC, datetime
 import aiosqlite
 
 from rentbot.core.exceptions import ListingAlreadyExistsError
-from rentbot.core.ids import canonical_id, canonical_id_from_listing
+from rentbot.core.ids import canonical_id, canonical_id_from_listing, content_fingerprint
 from rentbot.core.models import Listing
 
 __all__ = [
     "canonical_id",
     "canonical_id_from_listing",
+    "content_fingerprint",
     "ListingRepository",
 ]
 
@@ -99,6 +100,27 @@ class ListingRepository:
         row = await cursor.fetchone()
         return row is not None
 
+    async def exists_by_content_fp(self, fp: str) -> str | None:
+        """Check if a listing with the same content fingerprint exists.
+
+        Used for cross-platform deduplication: two listings from different
+        providers that share the same normalised (address, price, area) are
+        considered duplicates.
+
+        Args:
+            fp: Content fingerprint string (e.g. ``"via roma 1|600|80"``).
+
+        Returns:
+            The canonical ID of the existing duplicate, or ``None`` if no
+            match is found.
+        """
+        cursor = await self._conn.execute(
+            "SELECT id FROM seen_listings WHERE content_fp = ? LIMIT 1",
+            (fp,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
     # ------------------------------------------------------------------
     # Write helpers
     # ------------------------------------------------------------------
@@ -134,13 +156,14 @@ class ListingRepository:
 
         now_utc = datetime.now(UTC).isoformat()
         raw_json = listing.model_dump_json()
+        fp = content_fingerprint(listing)
 
         await self._conn.execute(
             """
             INSERT INTO seen_listings
-                (id, source, title, price, url, notified, filter_result, raw_json, date_added)
+                (id, source, title, price, url, notified, filter_result, raw_json, date_added, content_fp)
             VALUES
-                (?, ?, ?, ?, ?, 0, ?, ?, ?)
+                (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
             """,
             (
                 cid,
@@ -151,6 +174,7 @@ class ListingRepository:
                 filter_result,
                 raw_json,
                 now_utc,
+                fp,
             ),
         )
         await self._conn.commit()
@@ -223,6 +247,7 @@ class ListingRepository:
                 filter_result,
                 listing.model_dump_json(),
                 now_utc,
+                content_fingerprint(listing),
             )
             for listing, cid in new_pairs
         ]
@@ -230,9 +255,9 @@ class ListingRepository:
         await self._conn.executemany(
             """
             INSERT INTO seen_listings
-                (id, source, title, price, url, notified, filter_result, raw_json, date_added)
+                (id, source, title, price, url, notified, filter_result, raw_json, date_added, content_fp)
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )

@@ -79,8 +79,16 @@ CREATE TABLE IF NOT EXISTS seen_listings (
     filter_result TEXT,
     raw_json      TEXT,
     date_added    TEXT     NOT NULL,
+    content_fp    TEXT,
     PRIMARY KEY (id)
 )"""
+
+#: Index on content_fp for fast cross-platform duplicate lookups.
+_DDL_IDX_CONTENT_FP = """\
+CREATE INDEX IF NOT EXISTS idx_seen_listings_content_fp
+    ON seen_listings (content_fp)
+    WHERE content_fp IS NOT NULL
+"""
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -138,8 +146,24 @@ async def create_schema(conn: aiosqlite.Connection) -> None:
         conn: An open :class:`aiosqlite.Connection`.
     """
     await conn.execute(_DDL_SEEN_LISTINGS)
+    await _migrate_content_fp(conn)
+    await conn.execute(_DDL_IDX_CONTENT_FP)
     await conn.commit()
     logger.debug("Schema bootstrap complete (seen_listings table verified)")
+
+
+async def _migrate_content_fp(conn: aiosqlite.Connection) -> None:
+    """Add ``content_fp`` column to existing databases that lack it.
+
+    This is a forward-only migration: if the column already exists the
+    ``ALTER TABLE`` raises an ``OperationalError`` which we silently ignore.
+    """
+    try:
+        await conn.execute("ALTER TABLE seen_listings ADD COLUMN content_fp TEXT")
+        logger.info("Migrated seen_listings: added content_fp column")
+    except Exception:  # noqa: BLE001
+        # Column already exists — expected on subsequent startups.
+        pass
 
 
 # ---------------------------------------------------------------------------

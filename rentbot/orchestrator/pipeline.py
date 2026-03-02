@@ -79,7 +79,11 @@ from rentbot.filters.heuristic import HeuristicFilter
 from rentbot.notifiers.notifier import Notifier
 from rentbot.orchestrator.circuit_breaker import CircuitBreakerRegistry
 from rentbot.providers.base import BaseProvider
-from rentbot.storage.repository import ListingRepository, canonical_id_from_listing
+from rentbot.storage.repository import (
+    ListingRepository,
+    canonical_id_from_listing,
+    content_fingerprint,
+)
 
 __all__ = [
     "ProviderCycleStats",
@@ -121,6 +125,7 @@ class ProviderCycleStats:
     fetched: int = 0
     new: int = 0
     duplicate: int = 0
+    cross_platform_dup: int = 0
     passed_filter: int = 0
     alerted: int = 0
     errors: int = 0
@@ -157,6 +162,11 @@ class CycleStats:
     def total_duplicate(self) -> int:
         """Sum of duplicate/skipped listings across all providers."""
         return sum(p.duplicate for p in self.provider_stats)
+
+    @property
+    def total_cross_platform_dup(self) -> int:
+        """Sum of cross-platform duplicates across all providers."""
+        return sum(p.cross_platform_dup for p in self.provider_stats)
 
     @property
     def total_passed_filter(self) -> int:
@@ -199,7 +209,8 @@ class CycleStats:
         header = (
             f"cycle complete in {self.duration_s:.1f}s: "
             f"fetched={self.total_fetched} new={self.total_new} "
-            f"dup={self.total_duplicate} passed_filter={self.total_passed_filter} "
+            f"dup={self.total_duplicate} xdup={self.total_cross_platform_dup} "
+            f"passed_filter={self.total_passed_filter} "
             f"alerted={self.total_alerted} errors={self.total_errors}"
             f"{failed_part}"
         )
@@ -209,6 +220,7 @@ class CycleStats:
             lines.append(
                 f"  {ps.source}: "
                 f"fetched={ps.fetched} new={ps.new} dup={ps.duplicate} "
+                f"xdup={ps.cross_platform_dup} "
                 f"passed_filter={ps.passed_filter} alerted={ps.alerted} "
                 f"errors={ps.errors}{status}"
             )
@@ -281,6 +293,25 @@ async def process_listing(
 
     stats.new += 1
     logger.debug("STORE  %s — new listing inserted", cid, extra={"event": events.LISTING_NEW})
+
+    # ------------------------------------------------------------------
+    # Stage 2b — Cross-platform dedup (address + price + area)
+    # ------------------------------------------------------------------
+    fp = content_fingerprint(listing)
+    if fp is not None:
+        existing_cid = await repo.exists_by_content_fp(fp)
+        if existing_cid is not None and existing_cid != cid:
+            stats.cross_platform_dup += 1
+            logger.info(
+                "XDEDUP %s — cross-platform duplicate of %s (fp=%s) | '%s'",
+                cid,
+                existing_cid,
+                fp,
+                listing.title,
+                extra={"event": events.LISTING_CROSS_PLATFORM_DUP},
+            )
+            await repo.update_filter_result(cid, f"block:xdup:{existing_cid}")
+            return
 
     # ------------------------------------------------------------------
     # Stage 3 — Heuristic filter
@@ -428,11 +459,12 @@ async def run_provider(
             stats.errors += 1
 
     logger.info(
-        "Provider %s: done — fetched=%d new=%d dup=%d passed_filter=%d alerted=%d errors=%d",
+        "Provider %s: done — fetched=%d new=%d dup=%d xdup=%d passed_filter=%d alerted=%d errors=%d",
         source_label,
         stats.fetched,
         stats.new,
         stats.duplicate,
+        stats.cross_platform_dup,
         stats.passed_filter,
         stats.alerted,
         stats.errors,
@@ -505,12 +537,13 @@ async def run_cycle(
     cycle = CycleStats(provider_stats=provider_stats)
 
     logger.info(
-        "Cycle summary: providers=%d fetched=%d new=%d dup=%d "
+        "Cycle summary: providers=%d fetched=%d new=%d dup=%d xdup=%d "
         "passed_filter=%d alerted=%d errors=%d failed_providers=%s",
         len(providers),
         cycle.total_fetched,
         cycle.total_new,
         cycle.total_duplicate,
+        cycle.total_cross_platform_dup,
         cycle.total_passed_filter,
         cycle.total_alerted,
         cycle.total_errors,

@@ -291,12 +291,13 @@ async def _run_once_inner(
         )
         for ps in stats.provider_stats:
             logger.debug(
-                "  provider %-20s fetched=%-3d new=%-3d dup=%-3d "
+                "  provider %-20s fetched=%-3d new=%-3d dup=%-3d xdup=%-3d "
                 "passed_filter=%-3d alerted=%-3d errors=%-2d%s",
                 ps.source + ":",
                 ps.fetched,
                 ps.new,
                 ps.duplicate,
+                ps.cross_platform_dup,
                 ps.passed_filter,
                 ps.alerted,
                 ps.errors,

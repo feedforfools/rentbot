@@ -45,12 +45,14 @@ Typical usage::
 from __future__ import annotations
 
 import logging
+import re
 
 from rentbot.core.models import Listing
 
 __all__ = [
     "canonical_id",
     "canonical_id_from_listing",
+    "content_fingerprint",
 ]
 
 logger = logging.getLogger(__name__)
@@ -109,3 +111,61 @@ def canonical_id_from_listing(listing: Listing) -> str:
         assert canonical_id_from_listing(listing) == "casa:99999"
     """
     return canonical_id(str(listing.source), listing.id)
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform content fingerprint
+# ---------------------------------------------------------------------------
+
+#: Regex that collapses commas, extra whitespace, and common noise.
+_ADDR_NOISE_RE: re.Pattern[str] = re.compile(r"[,./]+")
+_WHITESPACE_RE: re.Pattern[str] = re.compile(r"\s+")
+
+
+def _normalise_address(address: str) -> str:
+    """Normalise an address for cross-platform comparison.
+
+    Lowercases, removes commas/dots/slashes, collapses whitespace.
+    Handles differences like ``"via Camucina, 18"`` vs ``"Via Camucina 18"``.
+    """
+    text = address.lower()
+    text = _ADDR_NOISE_RE.sub(" ", text)
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    return text
+
+
+def content_fingerprint(listing: Listing) -> str | None:
+    """Compute a cross-platform content fingerprint for duplicate detection.
+
+    Returns a string of the form ``"<normalised_address>|<price>|<area>"``
+    that is identical for listings describing the same property regardless
+    of which provider they come from.
+
+    Returns ``None`` when any of the three required fields (address, price,
+    area_sqm) is missing or zero — without all three we cannot reliably
+    determine sameness.
+
+    Args:
+        listing: A normalised :class:`~rentbot.core.models.Listing`.
+
+    Returns:
+        Fingerprint string, or ``None`` if insufficient data.
+
+    Examples::
+
+        # Same property, different providers:
+        fp1 = content_fingerprint(immo_listing)   # "via camucina 18|750|85"
+        fp2 = content_fingerprint(casa_listing)    # "via camucina 18|750|85"
+        assert fp1 == fp2
+
+        # Missing address → None
+        fp3 = content_fingerprint(no_address_listing)  # None
+    """
+    if not listing.address or not listing.price or not listing.area_sqm:
+        return None
+
+    norm_addr = _normalise_address(listing.address)
+    if not norm_addr:
+        return None
+
+    return f"{norm_addr}|{listing.price}|{listing.area_sqm}"
