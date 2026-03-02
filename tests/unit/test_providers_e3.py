@@ -57,6 +57,7 @@ from rentbot.providers.api.immobiliare import (
     ImmobiliareProvider,
     _detect_furnished,
 )
+from rentbot.providers.normalizers import normalise_price
 from rentbot.storage.repository import ListingRepository
 
 logger = logging.getLogger(__name__)
@@ -583,6 +584,55 @@ class TestCasaMapResult:
         listing = self.provider._map_result(raw)
         assert listing is not None
         assert listing.rooms == 2
+
+    def test_eu_formatted_price_parsed_correctly(self) -> None:
+        """Italian thousands separator (dot) must not break price parsing."""
+        raw = _casa_listing_dict(price_value="1.500")
+        listing = self.provider._map_result(raw)
+        assert listing is not None
+        assert listing.price == 1500
+
+    def test_original_price_preferred_over_display_value(self) -> None:
+        """marker.originalPrice (int) should be used when available."""
+        raw = _casa_listing_dict(price_value="1.500")
+        raw["features"]["price"]["marker"] = {
+            "price": "1.500",
+            "originalPrice": 1500,
+            "hasPriceRange": False,
+        }
+        listing = self.provider._map_result(raw)
+        assert listing is not None
+        assert listing.price == 1500
+
+
+# ---------------------------------------------------------------------------
+# normalise_price — European number formatting
+# ---------------------------------------------------------------------------
+
+
+class TestNormalisePrice:
+    """Unit tests for the normalise_price helper."""
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            (650, 650),
+            ("650", 650),
+            (650.9, 650),
+            ("1.500", 1500),
+            ("2.000", 2000),
+            ("1.200", 1200),
+            ("1.900", 1900),
+            ("1.500,00", 1500),
+            ("10.000", 10000),
+            (None, 0),
+            ("", 0),
+            ("n/a", 0),
+            (-5, 0),
+        ],
+    )
+    def test_normalise_price(self, raw: Any, expected: int) -> None:
+        assert normalise_price(raw) == expected
 
 
 # ---------------------------------------------------------------------------

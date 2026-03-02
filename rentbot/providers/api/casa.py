@@ -322,7 +322,11 @@ class CasaProvider(BaseProvider):
             logger.debug("Casa: skipping listing %s — price not visible", provider_id)
             return None
         try:
-            price = normalise_price(price_block.get("value"))
+            # Prefer the already-numeric originalPrice from the marker sub-dict
+            # when available; fall back to the display "value" string.
+            marker = price_block.get("marker") or {}
+            raw_price = marker.get("originalPrice") or price_block.get("value")
+            price = normalise_price(raw_price)
         except (TypeError, ValueError):
             price = 0
 

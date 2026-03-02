@@ -141,7 +141,8 @@ def normalise_title(value: Any, *, fallback_id: str) -> str:
 def normalise_price(value: Any) -> int:
     """Coerce a raw price value to a non-negative integer.
 
-    Handles ``None``, numeric strings (``"650"``), and plain integers.
+    Handles ``None``, numeric strings (``"650"``), plain integers, and
+    European-formatted strings with dot thousands separators (``"1.500"``).
     Returns ``0`` when the value is absent or cannot be parsed.
 
     Args:
@@ -153,18 +154,29 @@ def normalise_price(value: Any) -> int:
 
     Examples::
 
-        normalise_price(650)     # → 650
-        normalise_price("650")   # → 650
-        normalise_price(None)    # → 0
-        normalise_price("n/a")   # → 0
+        normalise_price(650)       # → 650
+        normalise_price("650")     # → 650
+        normalise_price("1.500")   # → 1500  (Italian thousands separator)
+        normalise_price("2.000")   # → 2000
+        normalise_price(None)      # → 0
+        normalise_price("n/a")     # → 0
     """
     if value is None:
         return 0
     try:
         return max(0, int(value))
     except (TypeError, ValueError):
-        logger.debug("normalise_price: cannot parse %r as int — defaulting to 0", value)
-        return 0
+        pass
+    # Handle European-formatted strings: dots as thousands separators,
+    # optional comma as decimal separator (e.g. "1.500" or "1.500,00").
+    if isinstance(value, str):
+        cleaned = value.replace(".", "").replace(",", ".")
+        try:
+            return max(0, int(float(cleaned)))
+        except (ValueError, OverflowError):
+            pass
+    logger.debug("normalise_price: cannot parse %r — defaulting to 0", value)
+    return 0
 
 
 def normalise_rooms(value: str | int | None) -> int | None:
