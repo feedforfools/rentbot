@@ -1,6 +1,6 @@
 # Rentbot
 
-Real-time Italian rental listing monitor. Polls Immobiliare.it, Casa.it, Subito.it, Idealista.it, and local Facebook Groups, then delivers instant Telegram push notifications for new listings that match your criteria.
+Real-time Italian rental listing monitor. Polls Immobiliare.it, Casa.it, and Subito.it, then delivers instant Telegram push notifications for new listings that match your criteria.
 
 ---
 
@@ -24,21 +24,19 @@ rentbot/
 ├── core/           # Domain models, settings, logging, shared utilities, exceptions
 ├── storage/        # SQLite repository — dedup and listing metadata
 ├── notifiers/      # Telegram delivery and message formatting
-├── filters/        # Heuristic and LLM-based listing qualification
+├── filters/        # Heuristic listing qualification
 ├── providers/
-│   ├── api/        # API-first providers: Immobiliare, Casa, Subito
-│   └── browser/    # Browser-based providers: Facebook Groups, Idealista
+│   └── api/        # API providers: Immobiliare (httpx), Casa (httpx), Subito (curl_cffi)
 └── orchestrator/   # Scheduling, concurrent execution, failure isolation
 ```
 
-**Two-container Docker topology:**
+**Single-container Docker topology:**
 
 | Container | Responsibility | Base image |
 |-----------|----------------|------------|
-| `core` | API polling, dedup, filtering, Telegram alerts | `python:3.11-slim` |
-| `worker` | Playwright browser scraping (Facebook, Idealista) | Playwright runtime |
+| `core` | API polling, dedup, filtering, Telegram alerts | `python:3.11-slim` (~164 MB) |
 
-The worker writes listing candidates to a shared staging file; the core container ingests and deduplicates them. SQLite is mounted only in the core container to avoid concurrent write contention.
+All three providers are API-based and run in a single lightweight container. SQLite is persisted on a mounted volume (WAL mode, single writer).
 
 ---
 
@@ -81,7 +79,7 @@ All configuration is via environment variables. Copy `.env.example` to `.env` an
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `LOG_FORMAT` | | `text` | `text` (human-readable) or `json` (structured) |
 
-See `.env.example` for the full list including LLM, Facebook, and per-provider overrides.
+See `.env.example` for the full list including per-provider overrides (`IMMOBILIARE_VRT`, `CASA_SEARCH_URL`, `SUBITO_REGION`, etc.).
 
 ---
 
@@ -105,67 +103,55 @@ python -m rentbot --log-level DEBUG --log-format json
 
 ## Docker
 
-The MVP ships a single **core** container. A browser-automation worker container (for Facebook / Idealista) will be added in Phase 2.
+The system runs as a single container with separate **prod** and **staging** environments, each with its own `.env` file and SQLite database volume.
 
 ### Prerequisites
 
 - Docker ≥ 24 and Docker Compose v2
-- `.env` file with credentials (see [Configuration](#configuration))
+- Environment files: `docker/env/prod.env` and/or `docker/env/staging.env` (copy from `.example` files and fill in credentials)
 
 ### Quick Start
 
-All commands can be run from the **project root** (the directory containing `.env`):
-
 ```bash
-# 1. Build the image
-docker compose -f docker/docker-compose.yml build
+# 1. Set up environment files
+cp docker/env/staging.env.example docker/env/staging.env
+$EDITOR docker/env/staging.env
 
-# 2. First-run seed — populate DB without sending any alerts
-docker compose -f docker/docker-compose.yml run --rm core --seed
+# 2. Build & start staging (runs first cycle immediately)
+make staging-up
 
-# 3. Start continuous polling in the background
-docker compose -f docker/docker-compose.yml up -d
+# 3. Follow live logs
+make staging-logs
 
-# 4. Follow live logs
-docker compose -f docker/docker-compose.yml logs -f core
-
-# 5. Stop
-docker compose -f docker/docker-compose.yml down
-```
-
-Alternatively, run commands from inside the `docker/` subdirectory (no `-f` flag needed):
-
-```bash
-cd docker/
-docker compose build
-docker compose run --rm core --seed
-docker compose up -d
+# 4. Stop
+make staging-down
 ```
 
 ### Common Operations
 
-| Task | Command (from project root) |
-|------|-----------------------------|
-| Build image | `docker compose -f docker/docker-compose.yml build` |
-| Seed (first run, no alerts) | `docker compose -f docker/docker-compose.yml run --rm core --seed` |
-| Start background | `docker compose -f docker/docker-compose.yml up -d` |
-| Start foreground | `docker compose -f docker/docker-compose.yml up` |
-| Dry-run test | `docker compose -f docker/docker-compose.yml run --rm core --dry-run --once` |
-| Follow logs | `docker compose -f docker/docker-compose.yml logs -f core` |
-| Stop | `docker compose -f docker/docker-compose.yml down` |
-| Stop + wipe DB | `docker compose -f docker/docker-compose.yml down -v` |
-| Check container health | `docker inspect --format='{{.State.Health.Status}}' rentbot_core` |
+| Task | Makefile target |
+|------|-----------------|
+| Build & start staging | `make staging-up` |
+| Build & start production | `make prod-up` |
+| Stop staging / prod | `make staging-down` / `make prod-down` |
+| Follow staging / prod logs | `make staging-logs` / `make prod-logs` |
+| Seed (populate DB, no alerts) | `make staging-seed` / `make prod-seed` |
+| Run one cycle with alerts | `make staging-run-once` / `make prod-run-once` |
+| Rebuild image only | `make staging-rebuild` / `make prod-rebuild` |
+| Wipe container + DB (fresh start) | `make staging-reset` / `make prod-reset` |
+| Remove all Docker images | `make clean-images` |
+| Promote staging config to prod | `make promote` |
 
 ### Resource Sizing
 
-The core container polls two API providers on a randomised 5–10 minute interval. It is deliberately lightweight.
+The core container polls three API providers on a randomised 5–10 minute interval. It is deliberately lightweight.
 
 | Resource | Minimum | Recommended | Notes |
 |----------|---------|-------------|-------|
 | CPU | 0.05 vCPU | 0.1 vCPU | Mostly idle between polls; brief burst during fetch + parse |
 | Memory | 64 MB | 128 MB | Python runtime + aiosqlite; use 256 MB for a comfortable safety margin |
 | Disk (DB) | 10 MB | 50 MB | SQLite grows a few KB/day; years of history before sizing matters |
-| Network | < 0.5 MB/poll | < 2 MB/poll | Two provider API calls per cycle, compressed JSON responses |
+| Network | < 0.5 MB/poll | < 2 MB/poll | Three provider API calls per cycle, compressed JSON responses |
 
 To enforce hard limits, add a `deploy.resources` block to the `core` service in `docker-compose.yml`:
 
@@ -182,17 +168,17 @@ To enforce hard limits, add a `deploy.resources` block to the `core` service in 
 
 ### Persistent Data
 
-SQLite is stored in the `rentbot_data` Docker managed volume, mounted at `/data/rentbot.db` inside the container.
+Each environment has its own Docker managed volume (`rentbot_staging_data`, `rentbot_prod_data`), mounted at `/data/rentbot.db` inside the container.
 
 ```bash
-# Find where Docker stores the volume on the host
-docker volume inspect rentbot_data
+# Find where Docker stores the staging volume on the host
+docker volume inspect docker_rentbot_staging_data
 
-# Backup the database to the current directory
+# Backup the staging database to the current directory
 docker run --rm \
-    -v rentbot_data:/data \
+    -v docker_rentbot_staging_data:/data \
     -v "$(pwd)":/backup \
-    busybox cp /data/rentbot.db /backup/rentbot-backup.db
+    busybox cp /data/rentbot.db /backup/rentbot-staging-backup.db
 ```
 
 > **Production tip:** swap the named volume for a host-bind mount so the DB path is explicit and easy to include in existing backup routines:
@@ -206,11 +192,14 @@ docker run --rm \
 After each polling cycle the scheduler writes a heartbeat timestamp to `/tmp/rentbot_heartbeat`. The Docker `HEALTHCHECK` reads that file and reports `healthy` as long as the last cycle completed within the past 30 minutes.
 
 ```bash
-# Quick status check
-docker inspect --format='{{.State.Health.Status}}' rentbot_core
+# Quick status check (staging)
+docker inspect --format='{{.State.Health.Status}}' rentbot_staging
+
+# Quick status check (production)
+docker inspect --format='{{.State.Health.Status}}' rentbot_prod
 
 # Full health history (last 5 check results)
-docker inspect --format='{{json .State.Health}}' rentbot_core | python -m json.tool
+docker inspect --format='{{json .State.Health}}' rentbot_staging | python -m json.tool
 ```
 
 ---
@@ -234,7 +223,7 @@ These rules are non-negotiable and apply to every file in the codebase.
 ### Async I/O
 
 - I/O-bound operations (HTTP, DB, file reads) **must be async** using `asyncio`.
-- Use `httpx.AsyncClient` for all HTTP calls.
+- Use `httpx.AsyncClient` for HTTP calls (Immobiliare, Casa). Subito uses `curl_cffi.requests.AsyncSession` (Chrome TLS impersonation to bypass Akamai WAF).
 - Providers run concurrently via `asyncio.gather()` — never sequentially in the hot path.
 
 ### Resilience
@@ -301,7 +290,7 @@ Each Python module should follow this top-to-bottom order:
 
 - **Store before filter:** a listing must be inserted into the DB immediately after the dedup check, _before_ the filter runs. Filtering decides whether to alert, not whether to store.
 - **SQLite WAL mode** must be enabled at DB initialisation.
-- The core process is the **single SQLite writer**. Browser workers write to a shared staging file; the core process ingests it.
+- The core process is the **single SQLite writer**.
 
 ### Testing
 
@@ -314,7 +303,7 @@ Each Python module should follow this top-to-bottom order:
 ### Dependencies
 
 - Pin core versions with lower and upper bounds in `pyproject.toml` (e.g. `httpx>=0.27,<1`).
-- Optional groups: `[dev]`, `[test]`, `[browser]`, `[llm]`.
+- Optional groups: `[dev]`, `[test]`.
 - Never add a dependency solely to `requirements.txt` — `pyproject.toml` is the single source of truth.
 
 ---
@@ -365,12 +354,12 @@ Integration tests (in `tests/integration/`) make real HTTP calls or require Tele
 
 ## Project Status
 
-**MVP phase in progress.** The API-based pipeline (Immobiliare.it + Casa.it → dedup → heuristic filter → Telegram) is operational and containerised. Epic 8 (quality gates + observability) is underway.
+**All planned providers are operational.** The full pipeline (Immobiliare.it + Casa.it + Subito.it → dedup → heuristic filter → Telegram) is deployed with prod/staging Docker environments.
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| Phase 1 — MVP | Epics 0–3 (foundation, domain, notifications, API providers), Epic 6 (orchestration), Epic 7 (Docker), Epic 8 (integration tests + observability) | 🔄 Epic 8 in progress (E8-T1 ✓ E8-T2 ✓, E8-T3–T5 remaining) |
-| Phase 2 — LLM + Browser | Epic 4 (LLM filter), Epic 5 (Facebook + Idealista), E6-T7 (core↔worker contract), Epic 7 Phase 2 additions | 🔜 Planned |
+| Phase 1 — MVP | Epics 0–3 (foundation, domain, notifications, API providers), Epic 6 (orchestration), Epic 7 (Docker), Epic 8 (quality gates + observability) | ✅ Complete |
+| Phase 2 — Subito.it | Subito provider (Hades JSON API + `curl_cffi` Akamai bypass), Docker staging/prod split, Makefile maintenance targets | ✅ Complete |
 | Phase 3 — Extensibility | Epic 9 (provider plugin registry) | 🔜 Future |
 
-292 unit tests pass. Run `make check && make test` to verify.
+448 unit tests pass. Run `make check && make test` to verify.
