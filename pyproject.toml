@@ -24,6 +24,8 @@ dependencies = [
     "aiosqlite>=0.20,<1",
     # Task scheduling (3.x stable; 4.x still in beta)
     "apscheduler>=3.10,<4",
+    # TLS-fingerprint-capable HTTP client (Akamai/Cloudflare bypass)
+    "curl_cffi>=0.7,<1",
 ]
 
 [project.optional-dependencies]

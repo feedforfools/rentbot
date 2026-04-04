@@ -1,95 +1,93 @@
 # =============================================================================
-# Rentbot — Docker Compose (MVP: core poller only)
+# Rentbot — Docker Compose (prod + staging)
 # =============================================================================
 #
-# Starts the core polling container with a persisted SQLite data volume.
-# Copy .env.example to .env and fill in credentials before the first run.
+# Two independent services:
 #
-#   cp .env.example .env
-#   # edit .env ...
+#   prod     — stable release, sends alerts to your main Telegram chat
+#   staging  — latest code, sends alerts to a separate test Telegram chat
 #
-# Common commands
-# ---------------
-#   Start (continuous mode):
-#     docker compose up -d
+# Each service has its OWN .env file (docker/env/prod.env, staging.env)
+# and its OWN SQLite database volume, so they never interfere.
 #
-#   Start (one-shot seed run — populate DB, no alerts):
-#     docker compose run --rm core --seed
+# Quick-start
+# -----------
+#   1. Copy the example env files and fill in credentials:
+#        cp docker/env/prod.env.example    docker/env/prod.env
+#        cp docker/env/staging.env.example docker/env/staging.env
 #
-#   Dry-run (log alerts, no Telegram sends):
-#     docker compose run --rm core --dry-run --once
+#   2. In staging.env, set TELEGRAM_CHAT_ID to a DIFFERENT chat/group
+#      than prod.env so alerts stay separate.
+#
+# Common commands (or use the Makefile targets — see below)
+# ---------------------------------------------------------
+#   Start production:
+#     docker compose -f docker/docker-compose.yml up -d prod
+#
+#   Start staging (rebuilds image from current code):
+#     docker compose -f docker/docker-compose.yml up -d --build staging
+#
+#   Seed run (no alerts, populate DB):
+#     docker compose -f docker/docker-compose.yml run --rm staging --seed
 #
 #   Follow logs:
-#     docker compose logs -f core
+#     docker compose -f docker/docker-compose.yml logs -f staging
 #
-#   Stop:
-#     docker compose down
+#   Stop one:
+#     docker compose -f docker/docker-compose.yml stop staging
 #
-#   Stop + wipe data volume:
-#     docker compose down -v
+#   Stop all + wipe staging data:
+#     docker compose -f docker/docker-compose.yml down -v --remove-orphans
 #
-# Phase 2 additions
-# -----------------
-# A `worker` service (Playwright browser automation) will be added once
-# E6-T7 (core↔worker communication contract) and E7-T2 (Dockerfile.worker)
-# are implemented.
+# Makefile shortcuts (run from project root)
+# ------------------------------------------
+#   make prod-up          make staging-up
+#   make prod-down        make staging-down
+#   make prod-logs        make staging-logs
+#   make prod-seed        make staging-seed
+#   make promote          (copy staging.env → prod.env)
 # =============================================================================
+
+# Shared build config — both services use the same Dockerfile but can run
+# different env files (and therefore different provider configs).
+x-core-base: &core-base
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.core
+  environment:
+    DATABASE_PATH: /data/rentbot.db
+  restart: unless-stopped
+  stop_grace_period: 30s
 
 services:
 
-  core:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.core
-    image: rentbot-core:latest
-    container_name: rentbot_core
-
-    # Load all settings from .env (sits at the project root).
-    # DATABASE_PATH is overridden below so it always points to the volume
-    # regardless of what's in .env.
+  # ---------------------------------------------------------------------------
+  # Production
+  # ---------------------------------------------------------------------------
+  prod:
+    <<: *core-base
+    image: rentbot-core:prod
+    container_name: rentbot_prod
     env_file:
-      - ../.env
-
-    environment:
-      # Force the DB into the persistent volume — overrides any .env value.
-      DATABASE_PATH: /data/rentbot.db
-
+      - env/prod.env
     volumes:
-      # Named volume for SQLite persistence across container restarts.
-      # Single-writer: only this container mounts it (Phase 2 worker uses a
-      # separate staging volume per the core↔worker contract in E6-T7).
-      - rentbot_data:/data
+      - rentbot_prod_data:/data
 
-    # Restart policy: restart unless explicitly stopped by the operator.
-    # Covers OOM kills, unhandled crashes, and host reboots.
-    restart: unless-stopped
-
-    # Give the SIGTERM handler (E6-T6) enough time to finish the current
-    # cycle and flush SQLite WAL before the container is force-killed.
-    stop_grace_period: 30s
-
-    # Resource limits (optional — uncomment to constrain the container).
-    # The core poller is intentionally lightweight: it mostly sleeps between
-    # 5-10 minute poll cycles.  Adjust upward if you add more providers.
-    #
-    # deploy:
-    #   resources:
-    #     limits:
-    #       cpus: "0.25"
-    #       memory: 256M
-    #     reservations:
-    #       cpus: "0.05"
-    #       memory: 64M
+  # ---------------------------------------------------------------------------
+  # Staging / Dev
+  # ---------------------------------------------------------------------------
+  staging:
+    <<: *core-base
+    image: rentbot-core:staging
+    container_name: rentbot_staging
+    env_file:
+      - env/staging.env
+    volumes:
+      - rentbot_staging_data:/data
 
 # =============================================================================
-# Volumes
+# Volumes — completely separate databases for prod and staging
 # =============================================================================
 volumes:
-  rentbot_data:
-    # External: false (default) — Docker Compose manages this volume.
-    # In production, swap for an explicit host-bind mount:
-    #   driver: local
-    #   driver_opts:
-    #     type: none
-    #     o: bind
-    #     device: /path/on/host
+  rentbot_prod_data:
+  rentbot_staging_data:

@@ -2,7 +2,6 @@ _*.md
 # Python virtual environments
 .venv/
 venv/
-env/
 
 # Python build artifacts
 __pycache__/
