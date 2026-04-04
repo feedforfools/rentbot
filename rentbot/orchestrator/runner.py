@@ -73,6 +73,7 @@ from rentbot.orchestrator.circuit_breaker import CircuitBreakerRegistry
 from rentbot.orchestrator.pipeline import CycleStats, run_cycle
 from rentbot.providers.api.casa import CasaProvider
 from rentbot.providers.api.immobiliare import ImmobiliareProvider
+from rentbot.providers.api.subito import SubitoProvider
 from rentbot.providers.base import BaseProvider
 from rentbot.storage.database import open_db
 from rentbot.storage.repository import ListingRepository
@@ -124,6 +125,12 @@ def _build_providers(settings: Settings) -> list[BaseProvider]:
         logger.debug("Casa provider enabled.")
     else:
         logger.info("Casa provider disabled — set CASA_SEARCH_URL in .env to enable.")
+
+    if settings.subito_region:
+        providers.append(SubitoProvider(settings))
+        logger.debug("Subito provider enabled.")
+    else:
+        logger.info("Subito provider disabled — set SUBITO_REGION in .env to enable.")
 
     return providers
 

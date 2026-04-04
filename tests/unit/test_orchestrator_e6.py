@@ -1084,6 +1084,7 @@ class TestCycleStatsReport:
         settings.telegram_configured = False
         settings.immobiliare_vrt = None
         settings.casa_search_url = None
+        settings.subito_region = None
         settings.to_filter_criteria.return_value = MagicMock()
 
         # Patch open_db so we don't touch the filesystem.
@@ -1122,6 +1123,7 @@ class TestCycleStatsReport:
         settings.telegram_configured = False
         settings.immobiliare_vrt = None
         settings.casa_search_url = None
+        settings.subito_region = None
         settings.to_filter_criteria.return_value = MagicMock()
 
         fake_conn = AsyncMock()
@@ -1170,6 +1172,7 @@ class TestPartialProviderFailureTolerance:
         s.telegram_configured = False
         s.immobiliare_vrt = None
         s.casa_search_url = None
+        s.subito_region = None
         s.to_filter_criteria.return_value = MagicMock()
         return s
 

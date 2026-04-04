@@ -57,6 +57,7 @@ from rentbot.core.models import Listing, ListingSource
 from rentbot.core.settings import Settings
 from rentbot.providers.api.casa import CasaProvider
 from rentbot.providers.api.immobiliare import ImmobiliareProvider
+from rentbot.providers.api.subito import SubitoProvider
 
 __all__: list[str] = []
 
@@ -74,6 +75,7 @@ load_dotenv()
 
 _IMMOBILIARE_CONFIGURED: bool = bool(os.environ.get("IMMOBILIARE_VRT"))
 _CASA_CONFIGURED: bool = bool(os.environ.get("CASA_SEARCH_URL"))
+_SUBITO_CONFIGURED: bool = bool(os.environ.get("SUBITO_REGION"))
 
 _skip_if_no_immobiliare = pytest.mark.skipif(
     not _IMMOBILIARE_CONFIGURED,
@@ -88,6 +90,14 @@ _skip_if_no_casa = pytest.mark.skipif(
     reason=(
         "CASA_SEARCH_URL is not set — skipping live Casa integration tests. "
         "Set it in .env, e.g. CASA_SEARCH_URL=https://www.casa.it/affitto/residenziale/pordenone/"
+    ),
+)
+
+_skip_if_no_subito = pytest.mark.skipif(
+    not _SUBITO_CONFIGURED,
+    reason=(
+        "SUBITO_REGION is not set — skipping live Subito integration tests. "
+        "Set it in .env, e.g. SUBITO_REGION=7"
     ),
 )
 
@@ -110,7 +120,7 @@ def live_settings() -> Settings:
     """
     settings = Settings()
     # Cap pages to 1 so each live test makes exactly one HTTP request.
-    return settings.model_copy(update={"immobiliare_max_pages": 1, "casa_max_pages": 1})
+    return settings.model_copy(update={"immobiliare_max_pages": 1, "casa_max_pages": 1, "subito_max_pages": 1})
 
 
 # ---------------------------------------------------------------------------
@@ -302,5 +312,72 @@ class TestCasaProviderLive:
 
         logger.info(
             "Casa live: all %d listing IDs are raw (non-canonicalized).",
+            len(results),
+        )
+
+
+# ---------------------------------------------------------------------------
+# SubitoProvider live tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+class TestSubitoProviderLive:
+    """Live integration tests for :class:`~rentbot.providers.api.subito.SubitoProvider`.
+
+    All tests in this class are skipped when ``SUBITO_REGION`` is absent.
+    """
+
+    @_skip_if_no_subito
+    async def test_fetch_completes_without_error(self, live_settings: Settings) -> None:
+        """Provider calls the live Hades API and returns a list without raising."""
+        async with SubitoProvider(live_settings) as provider:
+            results = await provider.fetch_latest()
+
+        assert isinstance(results, list), "fetch_latest() must return a list."
+        logger.info(
+            "Subito live: fetch completed successfully — %d listing(s) returned.",
+            len(results),
+        )
+
+    @_skip_if_no_subito
+    async def test_returned_listings_are_valid_listing_objects(
+        self, live_settings: Settings
+    ) -> None:
+        """Every item returned by the provider is a structurally valid Listing."""
+        async with SubitoProvider(live_settings) as provider:
+            results = await provider.fetch_latest()
+
+        for listing in results:
+            assert isinstance(listing, Listing), (
+                f"Expected Listing, got {type(listing)!r}: {listing!r}"
+            )
+            assert listing.source == ListingSource.SUBITO, f"Wrong source: {listing.source!r}"
+            assert listing.id, "Listing.id must not be empty."
+            assert listing.url.startswith("https://"), (
+                f"Listing URL should be an absolute HTTPS URL, got: {listing.url!r}"
+            )
+            assert listing.price >= 0, f"Listing price must be non-negative, got: {listing.price}"
+
+        logger.info(
+            "Subito live: all %d returned listing(s) passed structural checks.",
+            len(results),
+        )
+
+    @_skip_if_no_subito
+    async def test_provider_ids_are_raw_not_canonicalized(self, live_settings: Settings) -> None:
+        """``Listing.id`` must be the raw provider-local ID, not a ``"subito:…"`` key."""
+        async with SubitoProvider(live_settings) as provider:
+            results = await provider.fetch_latest()
+
+        for listing in results:
+            assert not listing.id.startswith("subito:"), (
+                f"Listing.id appears already canonicalized: {listing.id!r}. "
+                "SubitoProvider must set the raw provider-local ID, not the "
+                "canonical key — canonicalization happens in the storage layer."
+            )
+
+        logger.info(
+            "Subito live: all %d listing IDs are raw (non-canonicalized).",
             len(results),
         )

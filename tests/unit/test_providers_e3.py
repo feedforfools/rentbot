@@ -57,6 +57,15 @@ from rentbot.providers.api.immobiliare import (
     ImmobiliareProvider,
     _detect_furnished,
 )
+from rentbot.providers.api.subito import (
+    SubitoProvider,
+    _extract_ad_id,
+    _extract_features,
+    _extract_image_url,
+    _feature_bool,
+    _feature_int,
+    _parse_display_date,
+)
 from rentbot.providers.normalizers import normalise_price
 from rentbot.storage.repository import ListingRepository
 
@@ -764,6 +773,426 @@ class TestCasaProviderFetchLatest:
         p2_path = http.get.call_args_list[1].args[0]
         assert raw_query in p2_path
         assert "&page=2" in p2_path
+
+
+# ---------------------------------------------------------------------------
+# Subito — helpers
+# ---------------------------------------------------------------------------
+
+
+def _subito_ad(
+    *,
+    urn: str = "id:ad:123456:list:1",
+    ad_type_key: str = "u",
+    subject: str = "Bilocale in affitto a Pordenone",
+    body: str = "Luminoso bilocale ristrutturato.",
+    price_key: str = "650",
+    rooms_key: str = "2",
+    size_key: str = "60",
+    furnished_key: str | None = "1",
+    address: str | None = "Via Roma 1",
+    town_value: str | None = "Pordenone",
+    city_value: str | None = "Pordenone",
+    image_cdn_url: str | None = "https://images.sbito.it/api/v1/sbt-ads-images-pro/images/12/img.jpg",
+    listing_url: str | None = "https://www.subito.it/affitto-appartamenti/bilocale-123456.htm",
+    display_date: str | None = "2025-01-15T10:30:00+01:00",
+) -> dict[str, Any]:
+    """Build a synthetic Subito.it ad JSON object matching the Hades API shape."""
+    features: list[dict[str, Any]] = []
+    if price_key is not None:
+        features.append({"uri": "/price", "type": "price", "values": [{"key": price_key, "value": f"{price_key} €"}]})
+    if rooms_key is not None:
+        features.append({"uri": "/room", "type": "integer", "values": [{"key": rooms_key, "value": rooms_key}]})
+    if size_key is not None:
+        features.append({"uri": "/size", "type": "integer", "values": [{"key": size_key, "value": f"{size_key} m²"}]})
+    if furnished_key is not None:
+        features.append({"uri": "/furnished", "type": "boolean", "values": [{"key": furnished_key, "value": "Sì" if furnished_key == "1" else "No"}]})
+
+    geo: dict[str, Any] = {}
+    if town_value:
+        geo["town"] = {"value": town_value}
+    if city_value:
+        geo["city"] = {"value": city_value}
+    map_data: dict[str, Any] = {}
+    if address:
+        map_data["address"] = address
+    geo["map"] = map_data
+
+    images: list[dict[str, Any]] = []
+    if image_cdn_url:
+        images.append({"cdn_base_url": image_cdn_url})
+
+    dates: dict[str, Any] = {}
+    if display_date:
+        dates["display_iso8601"] = display_date
+
+    return {
+        "urn": urn,
+        "type": {"key": ad_type_key},
+        "subject": subject,
+        "body": body,
+        "features": features,
+        "geo": geo,
+        "images": images,
+        "urls": {"default": listing_url or ""},
+        "dates": dates,
+    }
+
+
+def _subito_page(
+    ads: list[dict[str, Any]],
+    count_all: int | None = None,
+) -> dict[str, Any]:
+    """Wrap Subito ads in a search API page response."""
+    return {
+        "count_all": count_all if count_all is not None else len(ads),
+        "ads": ads,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Subito — feature extraction helpers
+# ---------------------------------------------------------------------------
+
+
+class TestExtractFeatures:
+    """Unit tests for ``_extract_features``."""
+
+    def test_basic_extraction(self) -> None:
+        features = [
+            {"uri": "/price", "type": "price", "values": [{"key": "650", "value": "650 €"}]},
+            {"uri": "/room", "type": "integer", "values": [{"key": "3", "value": "3"}]},
+        ]
+        result = _extract_features(features)
+        assert result["price"]["key"] == "650"
+        assert result["room"]["key"] == "3"
+
+    def test_empty_list(self) -> None:
+        assert _extract_features([]) == {}
+
+    def test_none_input(self) -> None:
+        assert _extract_features(None) == {}
+
+    def test_missing_uri_skipped(self) -> None:
+        features = [{"type": "price", "values": [{"key": "500"}]}]
+        assert _extract_features(features) == {}
+
+    def test_empty_values_produces_empty_dict_entry(self) -> None:
+        features = [{"uri": "/size", "type": "integer", "values": []}]
+        result = _extract_features(features)
+        assert result["size"] == {}
+
+
+class TestFeatureInt:
+    """Unit tests for ``_feature_int``."""
+
+    def test_valid_integer(self) -> None:
+        assert _feature_int({"room": {"key": "3"}}, "room") == 3
+
+    def test_missing_key_returns_none(self) -> None:
+        assert _feature_int({}, "room") is None
+
+    def test_non_numeric_returns_none(self) -> None:
+        assert _feature_int({"room": {"key": "abc"}}, "room") is None
+
+    def test_empty_entry_returns_none(self) -> None:
+        assert _feature_int({"room": {}}, "room") is None
+
+
+class TestFeatureBool:
+    """Unit tests for ``_feature_bool``."""
+
+    def test_one_means_true(self) -> None:
+        assert _feature_bool({"furnished": {"key": "1"}}, "furnished") is True
+
+    def test_zero_means_false(self) -> None:
+        assert _feature_bool({"furnished": {"key": "0"}}, "furnished") is False
+
+    def test_missing_returns_none(self) -> None:
+        assert _feature_bool({}, "furnished") is None
+
+    def test_unexpected_value_returns_none(self) -> None:
+        assert _feature_bool({"furnished": {"key": "maybe"}}, "furnished") is None
+
+
+class TestExtractImageUrl:
+    """Unit tests for ``_extract_image_url``."""
+
+    def test_cdn_base_url_preferred(self) -> None:
+        images = [{"cdn_base_url": "https://cdn/img.jpg", "base_url": "https://fallback/img.jpg"}]
+        assert _extract_image_url(images) == "https://cdn/img.jpg"
+
+    def test_falls_back_to_base_url(self) -> None:
+        images = [{"base_url": "https://fallback/img.jpg"}]
+        assert _extract_image_url(images) == "https://fallback/img.jpg"
+
+    def test_none_when_empty(self) -> None:
+        assert _extract_image_url([]) is None
+
+    def test_none_when_input_none(self) -> None:
+        assert _extract_image_url(None) is None
+
+
+class TestParseDisplayDate:
+    """Unit tests for ``_parse_display_date``."""
+
+    def test_valid_iso_date(self) -> None:
+        result = _parse_display_date({"display_iso8601": "2025-01-15T10:30:00+01:00"})
+        assert result is not None
+        assert result.year == 2025
+        assert result.month == 1
+        assert result.day == 15
+
+    def test_missing_field_returns_none(self) -> None:
+        assert _parse_display_date({}) is None
+
+    def test_none_input_returns_none(self) -> None:
+        assert _parse_display_date(None) is None
+
+    def test_invalid_date_returns_none(self) -> None:
+        assert _parse_display_date({"display_iso8601": "not-a-date"}) is None
+
+
+class TestExtractAdId:
+    """Unit tests for ``_extract_ad_id``."""
+
+    def test_standard_urn(self) -> None:
+        assert _extract_ad_id("id:ad:123456:list:789") == "123456"
+
+    def test_fallback_to_full_urn(self) -> None:
+        assert _extract_ad_id("unexpected-format") == "unexpected-format"
+
+    def test_short_urn_falls_back(self) -> None:
+        assert _extract_ad_id("id:only") == "id:only"
+
+
+# ---------------------------------------------------------------------------
+# Subito — SubitoProvider._map_ad
+# ---------------------------------------------------------------------------
+
+
+class TestSubitoMapAd:
+    """Unit tests for SubitoProvider._map_ad."""
+
+    def setup_method(self) -> None:
+        self.settings = _minimal_settings()
+        self.provider = SubitoProvider(settings=self.settings, session=AsyncMock())
+
+    def test_full_valid_ad_maps_all_fields(self) -> None:
+        raw = _subito_ad()
+        listing = self.provider._map_ad(raw)
+
+        assert listing is not None
+        assert listing.id == "123456"
+        assert listing.source == ListingSource.SUBITO
+        assert listing.price == 650
+        assert listing.rooms == 2
+        assert listing.area_sqm == 60
+        assert listing.address == "Via Roma 1"
+        assert listing.zone == "Pordenone"
+        assert listing.furnished is True
+        assert listing.image_url == "https://images.sbito.it/api/v1/sbt-ads-images-pro/images/12/img.jpg"
+        assert listing.url == "https://www.subito.it/affitto-appartamenti/bilocale-123456.htm"
+        assert "Luminoso" in listing.description
+
+    def test_id_is_raw_provider_id_not_canonical(self) -> None:
+        raw = _subito_ad(urn="id:ad:99001:list:2")
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.id == "99001"
+        assert ":" not in listing.id
+
+    def test_missing_urn_returns_none(self) -> None:
+        raw = _subito_ad()
+        raw["urn"] = ""
+        assert self.provider._map_ad(raw) is None
+
+    def test_non_rental_type_returns_none(self) -> None:
+        raw = _subito_ad(ad_type_key="s")
+        assert self.provider._map_ad(raw) is None
+
+    def test_missing_price_defaults_to_zero(self) -> None:
+        raw = _subito_ad(price_key=None)
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.price == 0
+
+    def test_rooms_parsed_as_integer(self) -> None:
+        raw = _subito_ad(rooms_key="4")
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.rooms == 4
+
+    def test_missing_rooms_returns_none_field(self) -> None:
+        raw = _subito_ad(rooms_key=None)
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.rooms is None
+
+    def test_furnished_false(self) -> None:
+        raw = _subito_ad(furnished_key="0")
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.furnished is False
+
+    def test_furnished_none_when_absent(self) -> None:
+        raw = _subito_ad(furnished_key=None)
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.furnished is None
+
+    def test_image_url_none_when_no_images(self) -> None:
+        raw = _subito_ad(image_cdn_url=None)
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.image_url is None
+
+    def test_url_falls_back_to_subito_annunci_path(self) -> None:
+        raw = _subito_ad(listing_url=None, urn="id:ad:55555:list:1")
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.url == "https://www.subito.it/annunci/55555"
+
+    def test_zone_falls_back_to_city(self) -> None:
+        raw = _subito_ad(town_value=None, city_value="Udine")
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.zone == "Udine"
+
+    def test_zone_none_when_no_geo(self) -> None:
+        raw = _subito_ad(town_value=None, city_value=None)
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.zone is None
+
+    def test_address_none_when_no_map(self) -> None:
+        raw = _subito_ad(address=None)
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.address is None
+
+    def test_listing_date_parsed(self) -> None:
+        raw = _subito_ad(display_date="2025-03-01T14:00:00+01:00")
+        listing = self.provider._map_ad(raw)
+        assert listing is not None
+        assert listing.listing_date is not None
+        assert listing.listing_date.year == 2025
+        assert listing.listing_date.month == 3
+
+
+# ---------------------------------------------------------------------------
+# Subito — SubitoProvider.fetch_latest
+# ---------------------------------------------------------------------------
+
+
+class TestSubitoProviderFetchLatest:
+    """Integration-level tests for Subito fetch_latest using a mocked HTTP client."""
+
+    def _make_provider(self, settings: Settings, session: AsyncMock) -> SubitoProvider:
+        return SubitoProvider(settings=settings, session=session)
+
+    def _mock_session_get(self, *response_objects: Any) -> AsyncMock:
+        """Return an async session mock whose ``get`` returns responses in order."""
+        session = AsyncMock()
+        if len(response_objects) == 1:
+            session.get.return_value = response_objects[0]
+        else:
+            session.get.side_effect = list(response_objects)
+        return session
+
+    def _mock_curl_response(self, *, json_data: dict | None = None, status_code: int = 200) -> MagicMock:
+        """Create a lightweight mock of a curl_cffi response."""
+        response = MagicMock()
+        response.status_code = status_code
+        if json_data is not None:
+            response.json.return_value = json_data
+        return response
+
+    async def test_returns_empty_when_region_not_configured(self) -> None:
+        settings = _minimal_settings(subito_region="")
+        session = AsyncMock()
+        provider = self._make_provider(settings, session)
+
+        listings = await provider.fetch_latest()
+
+        assert listings == []
+        session.get.assert_not_called()
+
+    async def test_single_page_returns_one_listing(self) -> None:
+        settings = _minimal_settings(subito_max_pages=1)
+        page = _subito_page([_subito_ad()])
+        session = self._mock_session_get(self._mock_curl_response(json_data=page))
+        provider = self._make_provider(settings, session)
+
+        listings = await provider.fetch_latest()
+
+        assert len(listings) == 1
+        assert listings[0].id == "123456"
+        assert listings[0].source == ListingSource.SUBITO
+
+    async def test_dedup_within_fetch_removes_duplicate_ids(self) -> None:
+        settings = _minimal_settings(subito_max_pages=1)
+        ad = _subito_ad(urn="id:ad:dup01:list:1")
+        page = _subito_page([ad, ad])
+        session = self._mock_session_get(self._mock_curl_response(json_data=page))
+        provider = self._make_provider(settings, session)
+
+        listings = await provider.fetch_latest()
+
+        assert len(listings) == 1
+
+    async def test_pagination_stops_when_all_results_fetched(self) -> None:
+        """If count_all <= PAGE_SIZE, only one request should be made."""
+        settings = _minimal_settings(subito_max_pages=3)
+        page = _subito_page([_subito_ad()], count_all=1)
+        session = self._mock_session_get(self._mock_curl_response(json_data=page))
+        provider = self._make_provider(settings, session)
+
+        listings = await provider.fetch_latest()
+
+        assert len(listings) == 1
+        session.get.assert_called_once()
+
+    async def test_pagination_stops_at_settings_max_pages(self) -> None:
+        settings = _minimal_settings(subito_max_pages=2)
+        page1 = _subito_page([_subito_ad(urn="id:ad:p1:list:1")], count_all=100)
+        page2 = _subito_page([_subito_ad(urn="id:ad:p2:list:1")], count_all=100)
+        session = self._mock_session_get(
+            self._mock_curl_response(json_data=page1),
+            self._mock_curl_response(json_data=page2),
+        )
+        provider = self._make_provider(settings, session)
+
+        listings = await provider.fetch_latest()
+
+        assert len(listings) == 2
+        assert session.get.call_count == 2
+
+    async def test_non_rental_ads_filtered_out(self) -> None:
+        settings = _minimal_settings(subito_max_pages=1)
+        page = _subito_page([_subito_ad(ad_type_key="s")])
+        session = self._mock_session_get(self._mock_curl_response(json_data=page))
+        provider = self._make_provider(settings, session)
+
+        listings = await provider.fetch_latest()
+
+        assert listings == []
+
+    async def test_build_params_includes_region_and_city(self) -> None:
+        settings = _minimal_settings(subito_region="7", subito_city="2", subito_max_pages=1)
+        page = _subito_page([_subito_ad()], count_all=1)
+        session = self._mock_session_get(self._mock_curl_response(json_data=page))
+        provider = self._make_provider(settings, session)
+
+        await provider.fetch_latest()
+
+        call_kwargs = session.get.call_args
+        params = call_kwargs.kwargs.get("params") or (call_kwargs.args[1] if len(call_kwargs.args) > 1 else None)
+        assert params is not None
+        assert params["r"] == "7"
+        assert params["ci"] == "2"
+        assert params["t"] == "u"
+        assert params["c"] == "7"
 
 
 # ---------------------------------------------------------------------------

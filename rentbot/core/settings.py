@@ -163,6 +163,26 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # Subito.it
+    # ------------------------------------------------------------------
+    subito_region: str = Field(
+        default="7",
+        description=(
+            "Numeric Subito.it region code. Default: 7 (Friuli-Venezia Giulia). "
+            "Leave empty to disable the Subito provider."
+        ),
+    )
+    subito_city: str = Field(
+        default="2",
+        description="Numeric Subito.it city/province code. Default: 2 (Pordenone).",
+    )
+    subito_max_pages: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum number of paginated result pages to fetch per poll.",
+    )
+
+    # ------------------------------------------------------------------
     # Search parameters
     # ------------------------------------------------------------------
     search_city: str = Field(
