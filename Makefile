@@ -18,8 +18,8 @@ SRC      := rentbot/
 TESTS    := tests/
 
 .PHONY: all check lint format-check typecheck test test-integration test-all fix reset-db help \
-       prod-up prod-down prod-logs prod-seed prod-run-once prod-reset prod-rebuild \
-       staging-up staging-down staging-logs staging-seed staging-run-once staging-reset staging-rebuild \
+       prod-up prod-down prod-logs prod-seed prod-run-once prod-reset prod-rebuild prod-db \
+       staging-up staging-down staging-logs staging-seed staging-run-once staging-reset staging-rebuild staging-db \
        clean-images promote
 
 # ---------------------------------------------------------------------------
@@ -77,6 +77,30 @@ reset-db:  ## Delete the SQLite database so the next run starts fresh.
 	else \
 		echo "$(DB_PATH) does not exist — nothing to delete."; \
 	fi
+
+# DB_BROWSER is the macOS application name used with `open -a`.
+DB_BROWSER := DB Browser for SQLite
+# Temp copies live in /tmp so they are never committed.
+STAGING_DB_COPY := /tmp/rentbot_staging.db
+PROD_DB_COPY    := /tmp/rentbot_prod.db
+
+staging-db:  ## Copy staging DB from Docker volume and open in DB Browser for SQLite (macOS).
+	@echo "Extracting staging database from Docker volume…"
+	@docker run --rm \
+		-v docker_rentbot_staging_data:/data \
+		-v /tmp:/out \
+		alpine cp /data/rentbot.db /out/rentbot_staging.db
+	@echo "Opening $(STAGING_DB_COPY) in $(DB_BROWSER)…"
+	@open -a "$(DB_BROWSER)" "$(STAGING_DB_COPY)"
+
+prod-db:  ## Copy prod DB from Docker volume and open in DB Browser for SQLite (macOS).
+	@echo "Extracting production database from Docker volume…"
+	@docker run --rm \
+		-v docker_rentbot_prod_data:/data \
+		-v /tmp:/out \
+		alpine cp /data/rentbot.db /out/rentbot_prod.db
+	@echo "Opening $(PROD_DB_COPY) in $(DB_BROWSER)…"
+	@open -a "$(DB_BROWSER)" "$(PROD_DB_COPY)"
 
 # ---------------------------------------------------------------------------
 # Help
