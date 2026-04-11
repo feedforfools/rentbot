@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -780,6 +781,11 @@ class TestCasaProviderFetchLatest:
 # ---------------------------------------------------------------------------
 
 
+# Default display date: 5 days ago so test ads are never caught by the
+# 45-day staleness filter.
+_DEFAULT_SUBITO_DATE: str = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+
+
 def _subito_ad(
     *,
     urn: str = "id:ad:123456:list:1",
@@ -795,7 +801,7 @@ def _subito_ad(
     city_value: str | None = "Pordenone",
     image_cdn_url: str | None = "https://images.sbito.it/api/v1/sbt-ads-images-pro/images/12/img.jpg",
     listing_url: str | None = "https://www.subito.it/affitto-appartamenti/bilocale-123456.htm",
-    display_date: str | None = "2025-01-15T10:30:00+01:00",
+    display_date: str | None = _DEFAULT_SUBITO_DATE,
 ) -> dict[str, Any]:
     """Build a synthetic Subito.it ad JSON object matching the Hades API shape."""
     features: list[dict[str, Any]] = []
@@ -1193,6 +1199,41 @@ class TestSubitoProviderFetchLatest:
         assert params["ci"] == "2"
         assert params["t"] == "u"
         assert params["c"] == "7"
+
+    async def test_stale_listings_older_than_45_days_are_dropped(self) -> None:
+        """Listings with a listing_date older than 45 days should be filtered out."""
+        settings = _minimal_settings(subito_max_pages=1)
+        old_date = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        page = _subito_page([_subito_ad(display_date=old_date)])
+        session = self._mock_session_get(self._mock_curl_response(json_data=page))
+        provider = self._make_provider(settings, session)
+
+        listings = await provider.fetch_latest()
+
+        assert listings == []
+
+    async def test_recent_listings_are_kept(self) -> None:
+        """Listings within the 45-day window should not be filtered out."""
+        settings = _minimal_settings(subito_max_pages=1)
+        recent_date = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        page = _subito_page([_subito_ad(display_date=recent_date)])
+        session = self._mock_session_get(self._mock_curl_response(json_data=page))
+        provider = self._make_provider(settings, session)
+
+        listings = await provider.fetch_latest()
+
+        assert len(listings) == 1
+
+    async def test_listings_without_date_are_kept(self) -> None:
+        """Listings with no listing_date should not be dropped."""
+        settings = _minimal_settings(subito_max_pages=1)
+        page = _subito_page([_subito_ad(display_date=None)])
+        session = self._mock_session_get(self._mock_curl_response(json_data=page))
+        provider = self._make_provider(settings, session)
+
+        listings = await provider.fetch_latest()
+
+        assert len(listings) == 1
 
 
 # ---------------------------------------------------------------------------

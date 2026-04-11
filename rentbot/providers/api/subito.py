@@ -36,7 +36,7 @@ Typical usage::
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from curl_cffi.requests import AsyncSession
@@ -69,6 +69,11 @@ _AD_TYPE_RENTAL: str = "u"
 
 #: Number of results per page (Subito default is 30).
 _PAGE_SIZE: int = 30
+
+#: Maximum age for a listing to be considered relevant.  Listings older than
+#: this are silently dropped because the Pordenone market moves quickly and
+#: stale ads are almost certainly no longer available.
+_MAX_LISTING_AGE: timedelta = timedelta(days=45)
 
 #: CDN base URL for constructing full image URLs.
 _IMAGE_CDN_BASE: str = "https://images.sbito.it/api/v1/sbt-ads-images-pro/images"
@@ -258,6 +263,7 @@ class SubitoProvider(BaseProvider):
         listings: list[Listing] = []
         seen_ids: set[str] = set()
         max_pages = self._settings.subito_max_pages
+        cutoff = datetime.now(timezone.utc) - _MAX_LISTING_AGE
 
         for page in range(max_pages):
             start = page * _PAGE_SIZE
@@ -286,6 +292,19 @@ class SubitoProvider(BaseProvider):
                     continue
                 if listing.id in seen_ids:
                     continue
+                # Drop stale listings older than _MAX_LISTING_AGE.
+                if listing.listing_date is not None:
+                    ld = listing.listing_date
+                    # Make offset-naive dates comparable by assuming UTC.
+                    if ld.tzinfo is None:
+                        ld = ld.replace(tzinfo=timezone.utc)
+                    if ld < cutoff:
+                        logger.debug(
+                            "Subito: skipping stale listing %s (date=%s).",
+                            listing.id,
+                            listing.listing_date,
+                        )
+                        continue
                 seen_ids.add(listing.id)
                 listings.append(listing)
 
