@@ -83,6 +83,7 @@ from rentbot.storage.repository import (
     ListingRepository,
     canonical_id_from_listing,
     content_fingerprint,
+    desc_fingerprint,
 )
 
 __all__ = [
@@ -307,6 +308,26 @@ async def process_listing(
                 cid,
                 existing_cid,
                 fp,
+                listing.title,
+                extra={"event": events.LISTING_CROSS_PLATFORM_DUP},
+            )
+            await repo.update_filter_result(cid, f"block:xdup:{existing_cid}")
+            return
+
+    # ------------------------------------------------------------------
+    # Stage 2c — Cross-platform dedup (description fingerprint fallback)
+    # Useful when the provider does not expose a structured address
+    # (e.g. most Subito listings) but the agent copy-pasted the description.
+    # ------------------------------------------------------------------
+    dfp = desc_fingerprint(listing)
+    if dfp is not None:
+        existing_cid = await repo.exists_by_desc_fp(dfp)
+        if existing_cid is not None and existing_cid != cid:
+            stats.cross_platform_dup += 1
+            logger.info(
+                "XDEDUP %s — cross-platform duplicate of %s (desc_fp) | '%s'",
+                cid,
+                existing_cid,
                 listing.title,
                 extra={"event": events.LISTING_CROSS_PLATFORM_DUP},
             )

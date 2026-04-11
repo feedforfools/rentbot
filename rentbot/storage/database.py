@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS seen_listings (
     raw_json      TEXT,
     date_added    TEXT     NOT NULL,
     content_fp    TEXT,
+    desc_fp       TEXT,
     PRIMARY KEY (id)
 )"""
 
@@ -88,6 +89,13 @@ _DDL_IDX_CONTENT_FP = """\
 CREATE INDEX IF NOT EXISTS idx_seen_listings_content_fp
     ON seen_listings (content_fp)
     WHERE content_fp IS NOT NULL
+"""
+
+#: Index on desc_fp for fast description-based cross-platform dedup lookups.
+_DDL_IDX_DESC_FP = """\
+CREATE INDEX IF NOT EXISTS idx_seen_listings_desc_fp
+    ON seen_listings (desc_fp)
+    WHERE desc_fp IS NOT NULL
 """
 
 # ---------------------------------------------------------------------------
@@ -147,7 +155,9 @@ async def create_schema(conn: aiosqlite.Connection) -> None:
     """
     await conn.execute(_DDL_SEEN_LISTINGS)
     await _migrate_content_fp(conn)
+    await _migrate_desc_fp(conn)
     await conn.execute(_DDL_IDX_CONTENT_FP)
+    await conn.execute(_DDL_IDX_DESC_FP)
     await conn.commit()
     logger.debug("Schema bootstrap complete (seen_listings table verified)")
 
@@ -163,6 +173,18 @@ async def _migrate_content_fp(conn: aiosqlite.Connection) -> None:
         logger.info("Migrated seen_listings: added content_fp column")
     except Exception:  # noqa: BLE001
         # Column already exists — expected on subsequent startups.
+        pass
+
+
+async def _migrate_desc_fp(conn: aiosqlite.Connection) -> None:
+    """Add ``desc_fp`` column to existing databases that lack it.
+
+    Forward-only migration: silently ignored when the column already exists.
+    """
+    try:
+        await conn.execute("ALTER TABLE seen_listings ADD COLUMN desc_fp TEXT")
+        logger.info("Migrated seen_listings: added desc_fp column")
+    except Exception:  # noqa: BLE001
         pass
 
 

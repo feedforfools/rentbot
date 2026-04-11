@@ -53,6 +53,7 @@ __all__ = [
     "canonical_id",
     "canonical_id_from_listing",
     "content_fingerprint",
+    "desc_fingerprint",
 ]
 
 logger = logging.getLogger(__name__)
@@ -120,17 +121,30 @@ def canonical_id_from_listing(listing: Listing) -> str:
 #: Regex that collapses commas, extra whitespace, and common noise.
 _ADDR_NOISE_RE: re.Pattern[str] = re.compile(r"[,./]+")
 _WHITESPACE_RE: re.Pattern[str] = re.compile(r"\s+")
+#: Immobiliare.it emits this literal token when a civic number is unknown.
+_NO_NUMBER_RE: re.Pattern[str] = re.compile(r"\bno\s+number\b", re.IGNORECASE)
+#: Trailing standalone integer — civic number that may be present on one
+#: platform and absent on another (e.g. "via vallona 33" vs "via vallona").
+_TRAILING_NUMBER_RE: re.Pattern[str] = re.compile(r"\s+\d+$")
 
 
 def _normalise_address(address: str) -> str:
     """Normalise an address for cross-platform comparison.
 
     Lowercases, removes commas/dots/slashes, collapses whitespace.
+    Also strips:
+    - the literal ``"No Number"`` placeholder emitted by Immobiliare.it when
+      the civic number is unknown.
+    - a trailing standalone integer (civic number) so that ``"via vallona 33"``
+      and ``"via vallona"`` resolve to the same fingerprint.
+
     Handles differences like ``"via Camucina, 18"`` vs ``"Via Camucina 18"``.
     """
     text = address.lower()
+    text = _NO_NUMBER_RE.sub(" ", text)
     text = _ADDR_NOISE_RE.sub(" ", text)
     text = _WHITESPACE_RE.sub(" ", text).strip()
+    text = _TRAILING_NUMBER_RE.sub("", text).strip()
     return text
 
 
@@ -169,3 +183,60 @@ def content_fingerprint(listing: Listing) -> str | None:
         return None
 
     return f"{norm_addr}|{listing.price}|{listing.area_sqm}"
+
+
+# ---------------------------------------------------------------------------
+# Description fingerprint
+# ---------------------------------------------------------------------------
+
+#: Collapse any run of whitespace (newlines, tabs, spaces) to a single space.
+_DESC_WHITESPACE_RE: re.Pattern[str] = re.compile(r"\s+")
+
+#: Minimum number of normalised characters required before we trust the
+#: fingerprint.  Short / boilerplate descriptions (e.g. "Appartamento in
+#: affitto a Pordenone") are far too generic to use as a dedup signal.
+_DESC_MIN_LEN: int = 150
+
+#: How many leading normalised characters form the fingerprint key stored in
+#: the DB.  Long enough to be unique, short enough to index efficiently.
+_DESC_FP_CHARS: int = 200
+
+
+def desc_fingerprint(listing: Listing) -> str | None:
+    """Compute a description-based fingerprint for cross-platform deduplication.
+
+    Agents frequently copy-paste the full listing description across platforms.
+    This fingerprint captures the first :data:`_DESC_FP_CHARS` normalised
+    characters of the description so that two listings with identical (or
+    near-identical) descriptions are recognised as the same property.
+
+    Returns ``None`` when:
+
+    * ``listing.description`` is empty / ``None``.
+    * The normalised description is shorter than :data:`_DESC_MIN_LEN`
+      characters (too generic to be distinctive).
+
+    Args:
+        listing: A normalised :class:`~rentbot.core.models.Listing`.
+
+    Returns:
+        Fingerprint string of at most :data:`_DESC_FP_CHARS` characters, or
+        ``None`` if the description is absent or too short.
+
+    Examples::
+
+        # Same description on two platforms → same fingerprint:
+        fp1 = desc_fingerprint(subito_listing)      # "rif lsv1 nel cuore del ..."
+        fp2 = desc_fingerprint(immobiliare_listing)  # "rif lsv1 nel cuore del ..."
+        assert fp1 == fp2
+
+        # Empty description → None
+        fp3 = desc_fingerprint(no_desc_listing)  # None
+    """
+    if not listing.description:
+        return None
+    text = listing.description.lower()
+    text = _DESC_WHITESPACE_RE.sub(" ", text).strip()
+    if len(text) < _DESC_MIN_LEN:
+        return None
+    return text[:_DESC_FP_CHARS]

@@ -33,13 +33,14 @@ from datetime import UTC, datetime
 import aiosqlite
 
 from rentbot.core.exceptions import ListingAlreadyExistsError
-from rentbot.core.ids import canonical_id, canonical_id_from_listing, content_fingerprint
+from rentbot.core.ids import canonical_id, canonical_id_from_listing, content_fingerprint, desc_fingerprint
 from rentbot.core.models import Listing
 
 __all__ = [
     "canonical_id",
     "canonical_id_from_listing",
     "content_fingerprint",
+    "desc_fingerprint",
     "ListingRepository",
 ]
 
@@ -121,6 +122,30 @@ class ListingRepository:
         row = await cursor.fetchone()
         return row[0] if row else None
 
+    async def exists_by_desc_fp(self, fp: str) -> str | None:
+        """Check if a listing with the same description fingerprint exists.
+
+        Used as a fallback cross-platform deduplication signal when the
+        address-based ``content_fp`` is unavailable (e.g. most Subito listings
+        do not include a structured address).  Agents frequently copy-paste
+        the full listing description verbatim across platforms.
+
+        Args:
+            fp: Description fingerprint string (first
+                :data:`~rentbot.core.ids._DESC_FP_CHARS` normalised characters
+                of the description).
+
+        Returns:
+            The canonical ID of the existing duplicate, or ``None`` if no
+            match is found.
+        """
+        cursor = await self._conn.execute(
+            "SELECT id FROM seen_listings WHERE desc_fp = ? LIMIT 1",
+            (fp,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
     # ------------------------------------------------------------------
     # Write helpers
     # ------------------------------------------------------------------
@@ -157,13 +182,14 @@ class ListingRepository:
         now_utc = datetime.now(UTC).isoformat()
         raw_json = listing.model_dump_json()
         fp = content_fingerprint(listing)
+        dfp = desc_fingerprint(listing)
 
         await self._conn.execute(
             """
             INSERT INTO seen_listings
-                (id, source, title, price, url, notified, filter_result, raw_json, date_added, content_fp)
+                (id, source, title, price, url, notified, filter_result, raw_json, date_added, content_fp, desc_fp)
             VALUES
-                (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
             """,
             (
                 cid,
@@ -175,6 +201,7 @@ class ListingRepository:
                 raw_json,
                 now_utc,
                 fp,
+                dfp,
             ),
         )
         await self._conn.commit()
@@ -248,6 +275,7 @@ class ListingRepository:
                 listing.model_dump_json(),
                 now_utc,
                 content_fingerprint(listing),
+                desc_fingerprint(listing),
             )
             for listing, cid in new_pairs
         ]
@@ -255,9 +283,9 @@ class ListingRepository:
         await self._conn.executemany(
             """
             INSERT INTO seen_listings
-                (id, source, title, price, url, notified, filter_result, raw_json, date_added, content_fp)
+                (id, source, title, price, url, notified, filter_result, raw_json, date_added, content_fp, desc_fp)
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
